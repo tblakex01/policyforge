@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, ClassVar
 
 
 class Verdict(str, Enum):
@@ -47,7 +48,7 @@ class Condition:
     operator: str
     value: Any
 
-    _VALID_OPS: frozenset[str] = frozenset(
+    _VALID_OPS: ClassVar[frozenset[str]] = frozenset(
         {"eq", "neq", "in", "not_in", "contains", "regex", "gt", "lt", "gte", "lte"}
     )
 
@@ -56,6 +57,19 @@ class Condition:
             raise ValueError(
                 f"Invalid operator '{self.operator}'. Must be one of: {sorted(self._VALID_OPS)}"
             )
+        if self.operator == "regex":
+            try:
+                compiled = re.compile(str(self.value))
+            except re.error as exc:
+                raise ValueError(f"Invalid regex pattern '{self.value}': {exc}") from exc
+            object.__setattr__(self, "_compiled_re", compiled)
+
+    def match_regex(self, actual: str) -> bool:
+        """Test whether actual matches this condition's compiled regex pattern."""
+        compiled = getattr(self, "_compiled_re", None)
+        if compiled is not None:
+            return bool(compiled.search(actual))
+        return bool(re.search(str(self.value), actual))
 
 
 @dataclass(frozen=True)
@@ -142,6 +156,7 @@ class AuditEntry:
     message: str = ""
     evaluation_ms: float = 0.0
     integrity_hash: str = ""
+    chain_prev: str = ""
 
     def compute_integrity(self, hmac_key: bytes) -> str:
         """Return HMAC-SHA256 over the audit payload for tamper detection."""
@@ -151,11 +166,9 @@ class AuditEntry:
             f"{self.timestamp}|{self.request_id}|{self.tool_name}|"
             f"{self.agent_id}|{self.args_hash}|{self.verdict}|"
             f"{self.matched_rule}|{self.policy_name}|{self.message}|"
-            f"{self.evaluation_ms}"
+            f"{self.evaluation_ms}|{self.chain_prev}"
         )
-        return _hmac.new(
-            hmac_key, payload.encode("utf-8"), hashlib.sha256
-        ).hexdigest()
+        return _hmac.new(hmac_key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
     def seal(self, hmac_key: bytes) -> None:
         """Compute and set the integrity hash."""

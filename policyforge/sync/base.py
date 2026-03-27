@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +28,11 @@ class SyncProvider(ABC):
       - Downloading policies to local disk
       - Uploading local policies to cloud storage
       - Computing ETags/checksums to skip unchanged files
+
+    Subclasses must set ``_prefix`` in their ``__init__``.
     """
+
+    _prefix: str
 
     @property
     @abstractmethod
@@ -52,6 +56,14 @@ class SyncProvider(ABC):
     @abstractmethod
     def upload(self, local_path: Path, remote_key: str) -> None:
         """Upload a single policy file to the remote store."""
+
+    def remote_key_for(self, filename: str) -> str:
+        """Construct the full remote key/path for a given local filename.
+
+        Default implementation prepends self._prefix. Override if your
+        provider uses a different key structure.
+        """
+        return f"{self._prefix}{filename}"
 
     @staticmethod
     def file_md5(path: Path) -> str:

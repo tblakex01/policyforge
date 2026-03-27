@@ -1,6 +1,7 @@
 """Tests for the audit logger."""
 
 import json
+
 import pytest
 
 from policyforge.audit import AuditLogger
@@ -91,7 +92,7 @@ class TestAuditLogger:
         first = json.loads(lines[0])
         second = json.loads(lines[1])
 
-        assert f"chain:{first['hmac']}" in second["msg"]
+        assert second["chain_prev"] == first["hmac"]
 
 
 class TestAuditRequiresKey:

@@ -67,11 +67,13 @@ class OCISyncProvider(SyncProvider):
             response = self._client.list_objects(**kwargs)
             for obj in response.data.objects:
                 if obj.name.endswith((".yaml", ".yml")):
-                    results.append({
-                        "key": obj.name,
-                        "etag": obj.md5 or "",
-                        "size": obj.size or 0,
-                    })
+                    results.append(
+                        {
+                            "key": obj.name,
+                            "etag": obj.md5 or "",
+                            "size": obj.size or 0,
+                        }
+                    )
 
             next_start = response.data.next_start_with
             if not next_start:
@@ -91,7 +93,10 @@ class OCISyncProvider(SyncProvider):
                 fh.write(chunk)
         logger.info(
             "Downloaded oci://%s/%s/%s → %s",
-            self._namespace, self._bucket, remote_key, local_path,
+            self._namespace,
+            self._bucket,
+            remote_key,
+            local_path,
         )
 
     def upload(self, local_path: Path, remote_key: str) -> None:
@@ -104,5 +109,8 @@ class OCISyncProvider(SyncProvider):
             )
         logger.info(
             "Uploaded %s → oci://%s/%s/%s",
-            local_path, self._namespace, self._bucket, remote_key,
+            local_path,
+            self._namespace,
+            self._bucket,
+            remote_key,
         )

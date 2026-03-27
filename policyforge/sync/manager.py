@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import logging
-import tempfile
 from pathlib import Path
-from typing import Any
 
 from policyforge.sync.base import SyncProvider, SyncResult
 
@@ -58,9 +56,9 @@ class SyncManager:
                 remote_files = provider.list_remote()
             except Exception as exc:
                 logger.error("Failed to list remote for %s: %s", provider.name, exc)
-                results.append(SyncResult(
-                    provider=provider.name, errors=(str(exc),), success=False
-                ))
+                results.append(
+                    SyncResult(provider=provider.name, errors=(str(exc),), success=False)
+                )
                 continue
 
             for remote in remote_files:
@@ -84,12 +82,14 @@ class SyncManager:
                     logger.error(msg)
                     errors.append(msg)
 
-            results.append(SyncResult(
-                provider=provider.name,
-                downloaded=downloaded,
-                errors=tuple(errors),
-                success=len(errors) == 0,
-            ))
+            results.append(
+                SyncResult(
+                    provider=provider.name,
+                    downloaded=downloaded,
+                    errors=tuple(errors),
+                    success=len(errors) == 0,
+                )
+            )
 
         return results
 
@@ -108,15 +108,12 @@ class SyncManager:
             errors: list[str] = []
 
             try:
-                remote_files = {
-                    r["key"].rsplit("/", 1)[-1]: r
-                    for r in provider.list_remote()
-                }
+                remote_files = {r["key"].rsplit("/", 1)[-1]: r for r in provider.list_remote()}
             except Exception as exc:
                 logger.error("Failed to list remote for %s: %s", provider.name, exc)
-                results.append(SyncResult(
-                    provider=provider.name, errors=(str(exc),), success=False
-                ))
+                results.append(
+                    SyncResult(provider=provider.name, errors=(str(exc),), success=False)
+                )
                 continue
 
             for local_path in local_files:
@@ -127,8 +124,8 @@ class SyncManager:
                     logger.debug("Skipping unchanged: %s", local_path.name)
                     continue
 
-                # Construct remote key using provider's prefix convention
-                remote_key = self._infer_remote_key(provider, local_path.name)
+                # Construct remote key using provider's own prefix logic
+                remote_key = provider.remote_key_for(local_path.name)
                 try:
                     provider.upload(local_path, remote_key)
                     uploaded += 1
@@ -137,24 +134,13 @@ class SyncManager:
                     logger.error(msg)
                     errors.append(msg)
 
-            results.append(SyncResult(
-                provider=provider.name,
-                uploaded=uploaded,
-                errors=tuple(errors),
-                success=len(errors) == 0,
-            ))
+            results.append(
+                SyncResult(
+                    provider=provider.name,
+                    uploaded=uploaded,
+                    errors=tuple(errors),
+                    success=len(errors) == 0,
+                )
+            )
 
         return results
-
-    @staticmethod
-    def _infer_remote_key(provider: SyncProvider, filename: str) -> str:
-        """Reconstruct the remote key from the provider's name pattern."""
-        # Provider names follow pattern: "type://container/prefix/"
-        name = provider.name
-        if "://" in name:
-            _, rest = name.split("://", 1)
-            # rest is like "bucket/prefix/"
-            parts = rest.split("/", 1)
-            prefix = parts[1] if len(parts) > 1 else ""
-            return f"{prefix}{filename}"
-        return filename

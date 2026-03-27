@@ -35,17 +35,13 @@ class PolicyValidationError(Exception):
 def _validate_condition(raw: dict[str, Any], rule_name: str) -> None:
     missing = _REQUIRED_CONDITION_KEYS - raw.keys()
     if missing:
-        raise PolicyValidationError(
-            f"Condition in rule '{rule_name}' missing keys: {missing}"
-        )
+        raise PolicyValidationError(f"Condition in rule '{rule_name}' missing keys: {missing}")
 
 
 def _validate_rule(raw: dict[str, Any], policy_name: str) -> None:
     missing = _REQUIRED_RULE_KEYS - raw.keys()
     if missing:
-        raise PolicyValidationError(
-            f"Rule in policy '{policy_name}' missing keys: {missing}"
-        )
+        raise PolicyValidationError(f"Rule in policy '{policy_name}' missing keys: {missing}")
     if not isinstance(raw.get("conditions"), list) or len(raw["conditions"]) == 0:
         raise PolicyValidationError(
             f"Rule '{raw.get('name')}' in policy '{policy_name}' must have "
@@ -60,9 +56,7 @@ def _validate_policy(raw: dict[str, Any], filepath: str) -> None:
         raise PolicyValidationError(f"Policy in {filepath} is not a mapping.")
     missing = _REQUIRED_POLICY_KEYS - raw.keys()
     if missing:
-        raise PolicyValidationError(
-            f"Policy in {filepath} missing required keys: {missing}"
-        )
+        raise PolicyValidationError(f"Policy in {filepath} missing required keys: {missing}")
     for rule in raw.get("rules", []):
         _validate_rule(rule, raw["name"])
 
@@ -141,9 +135,7 @@ class PolicyLoader:
         if not path.exists():
             raise FileNotFoundError(f"Policy file not found: {path}")
         if path.suffix not in (".yaml", ".yml"):
-            raise PolicyValidationError(
-                f"Expected .yaml/.yml file, got: {path.suffix}"
-            )
+            raise PolicyValidationError(f"Expected .yaml/.yml file, got: {path.suffix}")
 
         text = path.read_text(encoding="utf-8")
         docs: list[dict[str, Any]] = []
@@ -163,7 +155,9 @@ class PolicyLoader:
         for raw in docs:
             _validate_policy(raw, str(path))
             policies.append(_parse_policy(raw))
-            logger.info("Loaded policy '%s' v%s from %s", policies[-1].name, policies[-1].version, path)
+            logger.info(
+                "Loaded policy '%s' v%s from %s", policies[-1].name, policies[-1].version, path
+            )
 
         return policies
 
@@ -178,7 +172,7 @@ class PolicyLoader:
             if yaml_file.suffix in (".yaml", ".yml"):
                 try:
                     policies.extend(self.load_file(yaml_file))
-                except (PolicyValidationError, yaml.YAMLError) as exc:
+                except (PolicyValidationError, yaml.YAMLError, ValueError) as exc:
                     logger.error("Skipping invalid policy file %s: %s", yaml_file, exc)
 
         logger.info("Loaded %d policies from %s", len(policies), path)

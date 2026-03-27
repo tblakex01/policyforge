@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import inspect
 import logging
-from typing import Any, Callable, TypeVar
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 from policyforge.engine import PolicyEngine
 from policyforge.models import Decision, Verdict
@@ -28,6 +30,21 @@ class PolicyDeniedError(Exception):
             f"Tool call denied by policy '{decision.policy_name}' "
             f"(rule: {decision.matched_rule}): {decision.message}"
         )
+
+
+def _bind_positional_args(
+    sig: inspect.Signature | None,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    """Map positional args to their parameter names for policy evaluation."""
+    if not args or sig is None:
+        return kwargs
+    try:
+        bound = sig.bind(*args, **kwargs)
+        return dict(bound.arguments)
+    except (TypeError, ValueError):
+        return kwargs
 
 
 def policy_gate(
@@ -60,6 +77,10 @@ def policy_gate(
 
     def decorator(func: F) -> F:
         resolved_name = tool_name or func.__name__
+        try:
+            cached_sig = inspect.signature(func)
+        except (TypeError, ValueError):
+            cached_sig = None
 
         if asyncio.iscoroutinefunction(func):
 
@@ -67,7 +88,7 @@ def policy_gate(
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
                 decision = engine.evaluate(
                     tool_name=resolved_name,
-                    args=kwargs,
+                    args=_bind_positional_args(cached_sig, args, kwargs),
                     context=extra_context,
                 )
                 _enforce(decision, resolved_name)
@@ -79,7 +100,7 @@ def policy_gate(
         def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
             decision = engine.evaluate(
                 tool_name=resolved_name,
-                args=kwargs,
+                args=_bind_positional_args(cached_sig, args, kwargs),
                 context=extra_context,
             )
             _enforce(decision, resolved_name)
@@ -114,9 +135,7 @@ def _enforce(decision: Decision, tool_name: str) -> None:
         )
 
     # ALLOW — proceed silently
-    logger.debug(
-        "ALLOWED tool=%s (%.1fms)", tool_name, decision.evaluation_ms
-    )
+    logger.debug("ALLOWED tool=%s (%.1fms)", tool_name, decision.evaluation_ms)
 
 
 class PolicyGateWrapper:
@@ -159,8 +178,6 @@ class PolicyGateWrapper:
             extra_context=self._extra_context,
         )(func)
 
-    def wrap_dict(
-        self, tools: dict[str, Callable[..., Any]]
-    ) -> dict[str, Callable[..., Any]]:
+    def wrap_dict(self, tools: dict[str, Callable[..., Any]]) -> dict[str, Callable[..., Any]]:
         """Wrap every callable in a name→function mapping."""
         return {name: self.wrap(fn, tool_name=name) for name, fn in tools.items()}

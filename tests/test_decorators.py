@@ -2,20 +2,23 @@
 
 import asyncio
 import textwrap
+
 import pytest
 
-from policyforge.engine import PolicyEngine
 from policyforge.decorators import (
     PolicyDeniedError,
     PolicyGateWrapper,
     policy_gate,
 )
+from policyforge.engine import PolicyEngine
 from policyforge.models import Verdict
 
 
 @pytest.fixture
 def engine(tmp_path):
-    (tmp_path / "policy.yaml").write_text(textwrap.dedent("""\
+    (tmp_path / "policy.yaml").write_text(
+        textwrap.dedent(
+            """\
         name: decorator-test
         default_verdict: ALLOW
         rules:
@@ -27,7 +30,9 @@ def engine(tmp_path):
               - field: tool_name
                 operator: in
                 value: ["dangerous_tool", "rm_rf"]
-    """))
+    """
+        )
+    )
     return PolicyEngine(policy_paths=[tmp_path])
 
 
@@ -104,7 +109,9 @@ class TestPolicyGateWrapper:
             safe_tools["dangerous_tool"]()
 
     def test_extra_context_propagated(self, tmp_path):
-        (tmp_path / "p.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "p.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: ctx-test
             default_verdict: ALLOW
             rules:
@@ -114,7 +121,9 @@ class TestPolicyGateWrapper:
                   - field: environment
                     operator: eq
                     value: production
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
         wrapper = PolicyGateWrapper(engine, extra_context={"environment": "production"})
 

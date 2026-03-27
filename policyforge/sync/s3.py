@@ -32,8 +32,7 @@ class S3SyncProvider(SyncProvider):
             import boto3
         except ImportError as exc:
             raise ImportError(
-                "boto3 is required for S3 sync. Install with: "
-                "pip install policyforge[aws]"
+                "boto3 is required for S3 sync. Install with: " "pip install policyforge[aws]"
             ) from exc
 
         session_kwargs: dict[str, Any] = {}
@@ -58,11 +57,13 @@ class S3SyncProvider(SyncProvider):
             for obj in page.get("Contents", []):
                 key = obj["Key"]
                 if key.endswith((".yaml", ".yml")):
-                    results.append({
-                        "key": key,
-                        "etag": obj["ETag"].strip('"'),
-                        "size": obj["Size"],
-                    })
+                    results.append(
+                        {
+                            "key": key,
+                            "etag": obj["ETag"].strip('"'),
+                            "size": obj["Size"],
+                        }
+                    )
         return results
 
     def download(self, remote_key: str, local_path: Path) -> None:

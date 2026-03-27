@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import re
 import time
 from pathlib import Path
 from typing import Any
@@ -39,8 +38,7 @@ def _resolve_field(context: dict[str, Any], dot_path: str) -> Any:
             current = current[segment]
         else:
             raise KeyError(
-                f"Cannot traverse into non-dict at segment '{segment}' "
-                f"in path '{dot_path}'"
+                f"Cannot traverse into non-dict at segment '{segment}' " f"in path '{dot_path}'"
             )
     return current
 
@@ -52,17 +50,17 @@ def _evaluate_condition(condition: Condition, context: dict[str, Any]) -> bool:
     op = condition.operator
 
     if op == "eq":
-        return actual == expected
+        return bool(actual == expected)
     if op == "neq":
-        return actual != expected
+        return bool(actual != expected)
     if op == "in":
-        return actual in expected
+        return bool(actual in expected)
     if op == "not_in":
-        return actual not in expected
+        return bool(actual not in expected)
     if op == "contains":
-        return expected in actual
+        return bool(expected in actual)
     if op == "regex":
-        return bool(re.search(str(expected), str(actual)))
+        return condition.match_regex(str(actual))
     if op == "gt":
         return float(actual) > float(expected)
     if op == "lt":
@@ -76,6 +74,14 @@ def _evaluate_condition(condition: Condition, context: dict[str, Any]) -> bool:
     raise ValueError(f"Unknown operator: {op}")
 
 
+def _safe_eval_condition(condition: Condition, context: dict[str, Any]) -> bool:
+    """Evaluate a condition, returning False for missing fields."""
+    try:
+        return _evaluate_condition(condition, context)
+    except (KeyError, TypeError):
+        return False
+
+
 def _evaluate_rule(rule: PolicyRule, context: dict[str, Any]) -> bool:
     """Return True if the rule's conditions match the context.
 
@@ -83,17 +89,12 @@ def _evaluate_rule(rule: PolicyRule, context: dict[str, Any]) -> bool:
     (the field doesn't exist, so it can't match).  This prevents
     rules from accidentally triggering on unrelated tool calls.
     """
-    results: list[bool] = []
-    for cond in rule.conditions:
-        try:
-            results.append(_evaluate_condition(cond, context))
-        except (KeyError, TypeError):
-            # Missing field → condition does not match
-            results.append(False)
+    if not rule.conditions:
+        return False
 
     if rule.match_strategy == MatchStrategy.ALL:
-        return all(results)
-    return any(results)  # MatchStrategy.ANY
+        return all(_safe_eval_condition(c, context) for c in rule.conditions)
+    return any(_safe_eval_condition(c, context) for c in rule.conditions)
 
 
 def _hash_args(args: dict[str, Any]) -> str:
@@ -177,9 +178,9 @@ class PolicyEngine:
         """
         args = args or {}
         eval_context = {
+            **(context or {}),
             "tool_name": tool_name,
             "args": args,
-            **(context or {}),
         }
 
         start = time.perf_counter()
@@ -249,9 +250,7 @@ class PolicyEngine:
             message="All policies passed.",
         )
 
-    def _evaluate_policy(
-        self, policy: Policy, context: dict[str, Any]
-    ) -> Decision:
+    def _evaluate_policy(self, policy: Policy, context: dict[str, Any]) -> Decision:
         """Evaluate a single policy's rules against the context."""
         for rule in policy.rules:
             if _evaluate_rule(rule, context):
@@ -271,9 +270,7 @@ class PolicyEngine:
 
     def _handle_eval_error(self, policy: Policy, exc: Exception) -> Decision:
         """Apply the policy's fail_mode when evaluation throws."""
-        logger.error(
-            "Policy '%s' evaluation error: %s", policy.name, exc, exc_info=True
-        )
+        logger.error("Policy '%s' evaluation error: %s", policy.name, exc, exc_info=True)
 
         if policy.fail_mode == FailMode.CLOSED:
             return Decision(

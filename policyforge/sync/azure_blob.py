@@ -66,11 +66,13 @@ class AzureBlobSyncProvider(SyncProvider):
         results: list[dict[str, Any]] = []
         for blob in self._client.list_blobs(name_starts_with=self._prefix):
             if blob.name.endswith((".yaml", ".yml")):
-                results.append({
-                    "key": blob.name,
-                    "etag": blob.etag.strip('"') if blob.etag else "",
-                    "size": blob.size,
-                })
+                results.append(
+                    {
+                        "key": blob.name,
+                        "etag": blob.etag.strip('"') if blob.etag else "",
+                        "size": blob.size,
+                    }
+                )
         return results
 
     def download(self, remote_key: str, local_path: Path) -> None:

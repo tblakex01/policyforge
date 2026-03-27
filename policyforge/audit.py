@@ -90,9 +90,9 @@ class AuditLogger:
             evaluation_ms=evaluation_ms,
         )
 
-        # Chain: fold previous hash into the message field before sealing
+        # Chain: store previous hash in dedicated field before sealing
         if self._chain and self._last_hash:
-            entry.message = f"{entry.message}|chain:{self._last_hash}"
+            entry.chain_prev = self._last_hash
 
         entry.seal(self._hmac_key)
 
@@ -105,9 +105,12 @@ class AuditLogger:
 
     def _write(self, entry: AuditEntry) -> None:
         """Append a JSON-lines record, rotating if needed."""
-        if self._current_file.exists() and self._current_file.stat().st_size >= self._max_bytes:
-            self._current_file = self._new_log_path()
-            logger.info("Rotated audit log to %s", self._current_file)
+        try:
+            if self._current_file.stat().st_size >= self._max_bytes:
+                self._current_file = self._new_log_path()
+                logger.info("Rotated audit log to %s", self._current_file)
+        except FileNotFoundError:
+            pass  # file doesn't exist yet, no rotation needed
 
         record = {
             "ts": entry.timestamp,
@@ -121,6 +124,7 @@ class AuditLogger:
             "msg": entry.message,
             "ms": entry.evaluation_ms,
             "hmac": entry.integrity_hash,
+            "chain_prev": entry.chain_prev,
         }
         with open(self._current_file, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, separators=(",", ":")) + "\n")
@@ -136,7 +140,7 @@ class AuditLogger:
         tampered = 0
         prev_hash = ""
 
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             for line_num, line in enumerate(fh, start=1):
                 raw: dict[str, Any] = json.loads(line)
                 entry = AuditEntry(
@@ -151,6 +155,7 @@ class AuditLogger:
                     message=raw["msg"],
                     evaluation_ms=raw["ms"],
                     integrity_hash=raw["hmac"],
+                    chain_prev=raw.get("chain_prev", ""),
                 )
 
                 if entry.verify(self._hmac_key):
@@ -160,12 +165,9 @@ class AuditLogger:
                     tampered += 1
 
                 # Chain verification
-                if self._chain and prev_hash:
-                    if f"chain:{prev_hash}" not in entry.message:
-                        logger.error(
-                            "BROKEN CHAIN at line %d in %s", line_num, path
-                        )
-                        tampered += 1
+                if self._chain and prev_hash and entry.chain_prev != prev_hash:
+                    logger.error("BROKEN CHAIN at line %d in %s", line_num, path)
+                    tampered += 1
 
                 prev_hash = raw["hmac"]
 

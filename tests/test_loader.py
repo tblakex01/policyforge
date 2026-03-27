@@ -1,8 +1,8 @@
 """Tests for the YAML policy loader."""
 
 import textwrap
+
 import pytest
-from pathlib import Path
 
 from policyforge.loader import PolicyLoader, PolicyValidationError
 from policyforge.models import FailMode, Verdict
@@ -12,7 +12,9 @@ from policyforge.models import FailMode, Verdict
 def tmp_policy_dir(tmp_path):
     """Create a temp dir with a sample policy file."""
     policy_file = tmp_path / "test_policy.yaml"
-    policy_file.write_text(textwrap.dedent("""\
+    policy_file.write_text(
+        textwrap.dedent(
+            """\
         name: test-policy
         description: Test policy for unit tests
         version: "2.0.0"
@@ -35,7 +37,9 @@ def tmp_policy_dir(tmp_path):
               - field: tool_name
                 operator: eq
                 value: query_db
-    """))
+    """
+        )
+    )
     return tmp_path
 
 
@@ -80,22 +84,30 @@ class TestLoadFile:
 
     def test_rule_missing_conditions(self, loader, tmp_path):
         bad = tmp_path / "bad.yaml"
-        bad.write_text(textwrap.dedent("""\
+        bad.write_text(
+            textwrap.dedent(
+                """\
             name: bad-policy
             rules:
               - name: bad-rule
-        """))
+        """
+            )
+        )
         with pytest.raises(PolicyValidationError, match="missing keys"):
             loader.load_file(bad)
 
     def test_empty_conditions_list(self, loader, tmp_path):
         bad = tmp_path / "bad.yaml"
-        bad.write_text(textwrap.dedent("""\
+        bad.write_text(
+            textwrap.dedent(
+                """\
             name: bad-policy
             rules:
               - name: bad-rule
                 conditions: []
-        """))
+        """
+            )
+        )
         with pytest.raises(PolicyValidationError, match="at least one condition"):
             loader.load_file(bad)
 
@@ -103,7 +115,9 @@ class TestLoadFile:
 class TestLoadDirectory:
     def test_loads_all_yaml_files(self, loader, tmp_policy_dir):
         # Add a second policy
-        (tmp_policy_dir / "second.yml").write_text(textwrap.dedent("""\
+        (tmp_policy_dir / "second.yml").write_text(
+            textwrap.dedent(
+                """\
             name: second-policy
             rules:
               - name: r1
@@ -111,7 +125,9 @@ class TestLoadDirectory:
                   - field: tool_name
                     operator: eq
                     value: x
-        """))
+        """
+            )
+        )
         policies = loader.load_directory(tmp_policy_dir)
         assert len(policies) == 2
         names = {p.name for p in policies}
@@ -131,7 +147,9 @@ class TestLoadDirectory:
 class TestMultiDocumentYaml:
     def test_multi_document(self, loader, tmp_path):
         multi = tmp_path / "multi.yaml"
-        multi.write_text(textwrap.dedent("""\
+        multi.write_text(
+            textwrap.dedent(
+                """\
             name: policy-a
             rules:
               - name: r1
@@ -147,7 +165,9 @@ class TestMultiDocumentYaml:
                   - field: tool_name
                     operator: eq
                     value: b
-        """))
+        """
+            )
+        )
         policies = loader.load_file(multi)
         assert len(policies) == 2
         assert policies[0].name == "policy-a"

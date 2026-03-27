@@ -1,6 +1,7 @@
 """Tests for the policy evaluation engine."""
 
 import textwrap
+
 import pytest
 
 from policyforge.engine import PolicyEngine
@@ -10,7 +11,9 @@ from policyforge.models import Verdict
 @pytest.fixture
 def policy_dir(tmp_path):
     """Temp dir with a test policy."""
-    (tmp_path / "test.yaml").write_text(textwrap.dedent("""\
+    (tmp_path / "test.yaml").write_text(
+        textwrap.dedent(
+            """\
         name: test-policy
         fail_mode: closed
         default_verdict: ALLOW
@@ -57,7 +60,9 @@ def policy_dir(tmp_path):
               - field: args.count
                 operator: gt
                 value: 100
-    """))
+    """
+        )
+    )
     return tmp_path
 
 
@@ -128,49 +133,59 @@ class TestFailClosed:
         assert "No active policies" in decision.message
 
     def test_eval_error_denies_on_closed(self, tmp_path):
-        """A rule with a bad regex triggers an exception → fail-closed."""
-        (tmp_path / "bad.yaml").write_text(textwrap.dedent("""\
-            name: bad-regex-policy
+        """A condition that errors at evaluation time → fail-closed."""
+        (tmp_path / "bad.yaml").write_text(
+            textwrap.dedent(
+                """\
+            name: runtime-error-policy
             fail_mode: closed
             default_verdict: ALLOW
             rules:
-              - name: bad-regex
+              - name: bad-compare
                 verdict: DENY
                 conditions:
-                  - field: tool_name
-                    operator: regex
-                    value: "[invalid("
-        """))
+                  - field: args.value
+                    operator: gt
+                    value: 100
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
-        decision = engine.evaluate("test_tool", {})
+        decision = engine.evaluate("test_tool", {"value": "not_a_number"})
         assert decision.verdict == Verdict.DENY
         assert "fail-closed" in decision.message.lower() or "error" in decision.message.lower()
 
 
 class TestFailOpen:
     def test_fail_open_policy(self, tmp_path):
-        """A rule with a bad regex triggers an exception → fail-open."""
-        (tmp_path / "open.yaml").write_text(textwrap.dedent("""\
+        """A condition that errors at evaluation time → fail-open."""
+        (tmp_path / "open.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: open-policy
             fail_mode: open
             default_verdict: DENY
             rules:
-              - name: bad-regex
+              - name: bad-compare
                 verdict: DENY
                 conditions:
-                  - field: tool_name
-                    operator: regex
-                    value: "[invalid("
-        """))
+                  - field: args.value
+                    operator: gt
+                    value: 100
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
-        decision = engine.evaluate("test_tool", {})
+        decision = engine.evaluate("test_tool", {"value": "not_a_number"})
         assert decision.verdict == Verdict.ALLOW
         assert "fail-open" in decision.message.lower()
 
 
 class TestDisabledPolicy:
     def test_disabled_policy_skipped(self, tmp_path):
-        (tmp_path / "disabled.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "disabled.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: disabled-policy
             enabled: false
             default_verdict: DENY
@@ -181,12 +196,18 @@ class TestDisabledPolicy:
                   - field: tool_name
                     operator: regex
                     value: ".*"
-        """))
-        (tmp_path / "allow.yaml").write_text(textwrap.dedent("""\
+        """
+            )
+        )
+        (tmp_path / "allow.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: allow-policy
             default_verdict: ALLOW
             rules: []
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
         # disabled-policy would deny, but it's skipped
         decision = engine.evaluate("anything", {})
@@ -195,27 +216,37 @@ class TestDisabledPolicy:
 
 class TestReload:
     def test_reload_replaces_policies(self, tmp_path):
-        (tmp_path / "v1.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "v1.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: v1
             default_verdict: DENY
             rules: []
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
         assert engine.policies[0].name == "v1"
 
         # Replace with v2
-        (tmp_path / "v1.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "v1.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: v2
             default_verdict: ALLOW
             rules: []
-        """))
+        """
+            )
+        )
         engine.reload([tmp_path])
         assert engine.policies[0].name == "v2"
 
 
 class TestExtraContext:
     def test_context_available_in_evaluation(self, tmp_path):
-        (tmp_path / "ctx.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "ctx.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: env-policy
             default_verdict: ALLOW
             rules:
@@ -226,16 +257,14 @@ class TestExtraContext:
                   - field: environment
                     operator: eq
                     value: production
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
         # With prod context
-        decision = engine.evaluate(
-            "any_tool", {}, context={"environment": "production"}
-        )
+        decision = engine.evaluate("any_tool", {}, context={"environment": "production"})
         assert decision.verdict == Verdict.DENY
 
         # With staging context
-        decision = engine.evaluate(
-            "any_tool", {}, context={"environment": "staging"}
-        )
+        decision = engine.evaluate("any_tool", {}, context={"environment": "staging"})
         assert decision.verdict == Verdict.ALLOW
