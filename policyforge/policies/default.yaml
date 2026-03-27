@@ -1,0 +1,74 @@
+# Default policy — deny high-risk tool calls, allow everything else.
+# Customize or add your own YAML files alongside this one.
+
+name: default-security
+description: >
+  Baseline security policy for AI agent tool calls.
+  Denies known-dangerous operations and restricts access to
+  sensitive resources.  Intended as a starting point — extend
+  with domain-specific rules.
+version: "1.0.0"
+fail_mode: closed        # deny on evaluation error
+default_verdict: ALLOW   # if no rule matches, allow the call
+
+rules:
+  # ── Deny shell / code execution tools ────────────────────────
+  - name: block-shell-exec
+    priority: 10
+    verdict: DENY
+    message: "Shell execution tools are blocked by policy."
+    match_strategy: any
+    conditions:
+      - field: tool_name
+        operator: in
+        value: ["run_shell", "execute_command", "bash", "exec", "os_system"]
+
+  # ── Deny file-system writes outside allowed paths ────────────
+  - name: block-fs-write-outside-sandbox
+    priority: 20
+    verdict: DENY
+    message: "File writes outside the sandbox directory are blocked."
+    conditions:
+      - field: tool_name
+        operator: in
+        value: ["write_file", "save_file", "create_file"]
+      - field: args.path
+        operator: regex
+        value: "^(?!/tmp/sandbox/).*"
+
+  # ── Deny network requests to internal CIDRs ─────────────────
+  - name: block-internal-network
+    priority: 30
+    verdict: DENY
+    message: "Requests to internal network ranges are blocked."
+    conditions:
+      - field: tool_name
+        operator: in
+        value: ["http_request", "fetch_url", "web_search"]
+      - field: args.url
+        operator: regex
+        value: "https?://(10\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)"
+
+  # ── Log (but allow) database queries ─────────────────────────
+  - name: log-db-queries
+    priority: 50
+    verdict: LOG_ONLY
+    message: "Database queries are logged for audit."
+    match_strategy: any
+    conditions:
+      - field: tool_name
+        operator: in
+        value: ["query_db", "sql_execute", "run_query"]
+
+  # ── Rate-limit style: deny bulk operations ───────────────────
+  - name: block-bulk-delete
+    priority: 40
+    verdict: DENY
+    message: "Bulk delete operations require explicit approval."
+    conditions:
+      - field: tool_name
+        operator: eq
+        value: "delete_records"
+      - field: args.count
+        operator: gt
+        value: 100

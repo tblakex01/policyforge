@@ -1,0 +1,58 @@
+# Hospitality industry — PII and guest data protection policy.
+
+name: hospitality-pii-guard
+description: >
+  Restricts AI agent access to guest PII, payment data, and
+  loyalty program records.  Designed for hospitality enterprises
+  handling PCI-DSS and GDPR-regulated data.
+version: "1.0.0"
+fail_mode: closed
+default_verdict: ALLOW
+
+rules:
+  # ── Block direct PII lookups by guest name/email ─────────────
+  - name: block-pii-lookup
+    priority: 10
+    verdict: DENY
+    message: "Direct guest PII lookups require elevated permissions."
+    conditions:
+      - field: tool_name
+        operator: in
+        value: ["lookup_guest", "search_guests", "get_guest_profile"]
+      - field: args.fields
+        operator: contains
+        value: "email"
+
+  # ── Deny access to payment instruments ───────────────────────
+  - name: block-payment-data
+    priority: 10
+    verdict: DENY
+    message: "Access to payment card data is prohibited."
+    match_strategy: any
+    conditions:
+      - field: tool_name
+        operator: in
+        value: ["get_payment_method", "list_cards", "charge_card"]
+
+  # ── Log loyalty point adjustments ────────────────────────────
+  - name: log-loyalty-adjustments
+    priority: 50
+    verdict: LOG_ONLY
+    message: "Loyalty point changes are logged for audit."
+    conditions:
+      - field: tool_name
+        operator: eq
+        value: "adjust_loyalty_points"
+
+  # ── Block export of guest lists ──────────────────────────────
+  - name: block-guest-export
+    priority: 20
+    verdict: DENY
+    message: "Bulk guest data exports are blocked — use the data warehouse."
+    conditions:
+      - field: tool_name
+        operator: in
+        value: ["export_guests", "download_guest_list"]
+      - field: args.count
+        operator: gt
+        value: 50
