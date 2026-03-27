@@ -270,7 +270,7 @@ gated_tools = gate.wrap_dict({
 ## Development
 
 ```bash
-git clone https://github.com/webpro255/policyforge.git
+git clone https://github.com/tblakex01/policyforge.git
 cd policyforge
 pip install -e ".[dev]"
 pytest -v
