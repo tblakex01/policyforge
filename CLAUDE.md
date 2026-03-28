@@ -31,7 +31,7 @@ policyforge/              # Main package
   engine.py               # PolicyEngine - evaluates tool calls against policies
   loader.py               # PolicyLoader - loads/validates YAML policy files
   decorators.py           # @policy_gate decorator and PolicyGateWrapper
-  audit.py                # AuditLogger - HMAC-signed, hash-chained JSON-lines
+  audit.py                # AuditLogger - HMAC-signed, hash-chained JSON Lines
   policies/               # Default YAML policy templates
   sync/                   # Cloud sync providers (S3, Azure Blob, OCI)
     base.py               # SyncProvider ABC and SyncResult
@@ -53,8 +53,8 @@ examples/                 # Usage examples and integration guides
 ## Code Conventions
 
 - **Python 3.10+** target
-- **Type hints required** on all public APIs (strict mypy)
-- **Line length**: 99 characters (both black and ruff)
+- **Type hints required** on all public APIs (strict mypy — see `[tool.mypy]` in `pyproject.toml`)
+- **Line length**: 99 characters (both black and ruff — see `[tool.black]` and `[tool.ruff]` in `pyproject.toml`)
 - **Ruff rules**: E, F, W, I, UP, B, SIM
 - **Black** for formatting
 - Private methods prefixed with `_`
@@ -69,7 +69,7 @@ examples/                 # Usage examples and integration guides
 
 ## CI Pipeline
 
-GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to main:
+GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on push/PR to main:
 1. **Lint & Format**: `black --check` + `ruff check` (Python 3.12)
 2. **Type Check**: `mypy policyforge` strict (Python 3.12)
 3. **Tests**: `pytest -v` across Python 3.10, 3.11, 3.12
@@ -84,9 +84,18 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to main:
 
 - `POLICYFORGE_HMAC_KEY` - HMAC key for AuditLogger (alternative to constructor param)
 
+## Policy Loading & Discovery
+
+`PolicyLoader` (in `policyforge/loader.py`) supports two loading modes:
+
+- **`load_file(path)`** — loads one or more policies from a single `.yaml`/`.yml` file. Supports multi-document YAML (`---` separators) and a top-level `policies` key for grouping.
+- **`load_directory(path)`** — recursively discovers and loads all `.yaml`/`.yml` files under the given directory (sorted alphabetically). Invalid files are logged and skipped, not fatal.
+
+Policy resolution: `PolicyEngine` evaluates all loaded enabled policies in order. The first rule that matches with a `DENY` verdict short-circuits evaluation. If no rule matches, the policy's `default_verdict` applies (default: `DENY`). See `policyforge/policies/` for template examples.
+
 ## Common Gotchas
 
-- Cloud SDK types are ignored in mypy config (`boto3`, `botocore`, `oci`, `azure.*`)
+- Cloud SDK types are ignored in mypy config (`boto3`, `botocore`, `oci`, `azure.*`) — see `[tool.mypy]` in `pyproject.toml`
 - Policy YAML supports both single-document and multi-document formats
 - AuditLogger uses 50 MB log rotation by default with hash chaining
 - The `@policy_gate` decorator works with both sync and async functions
