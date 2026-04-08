@@ -103,7 +103,7 @@ def _hash_args(args: dict[str, Any]) -> str:
         serialized = json.dumps(args, sort_keys=True, default=str)
     except (TypeError, ValueError):
         serialized = str(args)
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 class PolicyEngine:
@@ -308,17 +308,17 @@ class PolicyEngine:
             return Decision(
                 verdict=Verdict.DENY,
                 policy_name=policy.name,
-                message=f"Evaluation error — fail-closed: {exc}",
+                message="Evaluation error — fail-closed.",
             )
         if policy.fail_mode == FailMode.LOG:
             return Decision(
                 verdict=Verdict.LOG_ONLY,
                 policy_name=policy.name,
-                message=f"Evaluation error — logging only: {exc}",
+                message="Evaluation error — logging only.",
             )
         # FailMode.OPEN
         return Decision(
             verdict=Verdict.ALLOW,
             policy_name=policy.name,
-            message=f"Evaluation error — fail-open: {exc}",
+            message="Evaluation error — fail-open.",
         )

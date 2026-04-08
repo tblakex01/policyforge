@@ -88,3 +88,19 @@ class TestAuditEntry:
         entry = AuditEntry(request_id="x", tool_name="t", verdict="ALLOW")
         entry.seal(b"key-one")
         assert entry.verify(b"key-two") is False
+
+    def test_verify_uses_constant_time_compare(self, monkeypatch):
+        key = b"test-secret-key"
+        entry = AuditEntry(request_id="abc123", tool_name="test_tool", verdict="ALLOW")
+        entry.seal(key)
+
+        called = {"used": False}
+
+        def fake_compare_digest(left: str, right: str) -> bool:
+            called["used"] = True
+            return left == right
+
+        monkeypatch.setattr("policyforge.models.hmac.compare_digest", fake_compare_digest)
+
+        assert entry.verify(key) is True
+        assert called["used"] is True

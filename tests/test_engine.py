@@ -1,9 +1,11 @@
 """Tests for the policy evaluation engine."""
 
+import json
 import textwrap
 
 import pytest
 
+from policyforge.audit import AuditLogger
 from policyforge.engine import PolicyEngine
 from policyforge.models import Verdict
 
@@ -98,6 +100,27 @@ class TestBasicEvaluation:
         decision = engine.evaluate("web_search", {})
         assert len(decision.request_id) == 16
 
+    def test_audit_uses_full_sha256_args_hash(self, tmp_path):
+        (tmp_path / "policy.yaml").write_text(
+            textwrap.dedent(
+                """\
+            name: audit-policy
+            default_verdict: ALLOW
+            rules: []
+        """
+            )
+        )
+        audit_dir = tmp_path / "audit"
+        audit = AuditLogger(log_dir=audit_dir, hmac_key="test-audit-key")
+        engine = PolicyEngine(policy_paths=[tmp_path], audit_logger=audit)
+
+        engine.evaluate("web_search", {"query": "test"})
+
+        log_file = next(audit_dir.glob("audit_*.jsonl"))
+        record = json.loads(log_file.read_text(encoding="utf-8").strip())
+
+        assert len(record["args_hash"]) == 64
+
 
 class TestConditionOperators:
     def test_regex_match(self, engine):
@@ -154,6 +177,7 @@ class TestFailClosed:
         decision = engine.evaluate("test_tool", {"value": "not_a_number"})
         assert decision.verdict == Verdict.DENY
         assert "fail-closed" in decision.message.lower() or "error" in decision.message.lower()
+        assert "not_a_number" not in decision.message
 
     def test_type_error_in_condition_denies_on_closed(self, tmp_path):
         """Type mismatches must trigger fail-closed instead of silently skipping."""
@@ -177,6 +201,7 @@ class TestFailClosed:
         decision = engine.evaluate("test_tool", {"value": 123})
         assert decision.verdict == Verdict.DENY
         assert "fail-closed" in decision.message.lower() or "error" in decision.message.lower()
+        assert "123" not in decision.message
 
 
 class TestFailOpen:
@@ -202,6 +227,7 @@ class TestFailOpen:
         decision = engine.evaluate("test_tool", {"value": "not_a_number"})
         assert decision.verdict == Verdict.ALLOW
         assert "fail-open" in decision.message.lower()
+        assert "not_a_number" not in decision.message
 
     def test_fail_open_does_not_bypass_later_deny(self, tmp_path):
         (tmp_path / "aaa-open.yaml").write_text(

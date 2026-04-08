@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import re
 import time
 import uuid
@@ -176,4 +177,4 @@ class AuditEntry:
 
     def verify(self, hmac_key: bytes) -> bool:
         """Return True if the stored hash matches a fresh computation."""
-        return self.integrity_hash == self.compute_integrity(hmac_key)
+        return hmac.compare_digest(self.integrity_hash, self.compute_integrity(hmac_key))
