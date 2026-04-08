@@ -1,6 +1,8 @@
 """Tests for the audit logger."""
 
 import json
+import threading
+import time
 
 import pytest
 
@@ -93,6 +95,72 @@ class TestAuditLogger:
         second = json.loads(lines[1])
 
         assert second["chain_prev"] == first["hmac"]
+
+    def test_concurrent_logging_preserves_hash_chain(self, audit, monkeypatch):
+        """Concurrent writes should still produce a valid hash chain."""
+        audit.log(request_id="seed", tool_name="t", agent_id="a", args_hash="h", verdict="ALLOW")
+
+        original_write = audit._write
+        first_concurrent_write_started = threading.Event()
+        release_first_write = threading.Event()
+        write_count = 0
+
+        def blocking_write(entry):
+            nonlocal write_count
+            write_count += 1
+            if write_count == 1:
+                first_concurrent_write_started.set()
+                assert release_first_write.wait(timeout=2)
+            original_write(entry)
+
+        monkeypatch.setattr(audit, "_write", blocking_write)
+
+        thread_one = threading.Thread(
+            target=audit.log,
+            kwargs={
+                "request_id": "r2",
+                "tool_name": "t",
+                "agent_id": "a",
+                "args_hash": "h",
+                "verdict": "ALLOW",
+            },
+        )
+        thread_two = threading.Thread(
+            target=audit.log,
+            kwargs={
+                "request_id": "r3",
+                "tool_name": "t",
+                "agent_id": "a",
+                "args_hash": "h",
+                "verdict": "ALLOW",
+            },
+        )
+
+        thread_one.start()
+        assert first_concurrent_write_started.wait(timeout=2)
+        thread_two.start()
+        time.sleep(0.05)
+        release_first_write.set()
+
+        thread_one.join(timeout=2)
+        thread_two.join(timeout=2)
+
+        assert not thread_one.is_alive()
+        assert not thread_two.is_alive()
+
+        valid, tampered = audit.verify_log()
+        assert valid == 3
+        assert tampered == 0
+
+    def test_verify_log_counts_malformed_lines_as_tampered(self, audit):
+        audit.log(request_id="r1", tool_name="t", agent_id="a", args_hash="h", verdict="ALLOW")
+        log_file = list(audit._log_dir.glob("audit_*.jsonl"))[0]
+        log_file.write_text(log_file.read_text() + '{"ts":')
+
+        valid, tampered = audit.verify_log()
+
+        assert valid == 1
+        assert tampered == 1
 
 
 class TestAuditRequiresKey:

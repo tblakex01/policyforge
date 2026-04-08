@@ -70,8 +70,9 @@ class OCISyncProvider(SyncProvider):
                     results.append(
                         {
                             "key": obj.name,
-                            "etag": obj.md5 or "",
                             "size": obj.size or 0,
+                            "content_hash": obj.md5 or "",
+                            "content_hash_algorithm": "md5-base64",
                         }
                     )
 

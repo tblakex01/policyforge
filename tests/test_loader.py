@@ -111,6 +111,38 @@ class TestLoadFile:
         with pytest.raises(PolicyValidationError, match="at least one condition"):
             loader.load_file(bad)
 
+    def test_policies_key_requires_list(self, loader, tmp_path):
+        bad = tmp_path / "bad.yaml"
+        bad.write_text(
+            textwrap.dedent(
+                """\
+            policies:
+              name: invalid
+        """
+            )
+        )
+        with pytest.raises(PolicyValidationError, match="policies"):
+            loader.load_file(bad)
+
+    def test_enabled_must_be_boolean(self, loader, tmp_path):
+        bad = tmp_path / "bad.yaml"
+        bad.write_text(
+            textwrap.dedent(
+                """\
+            name: bad-policy
+            enabled: "false"
+            rules:
+              - name: allow-any
+                conditions:
+                  - field: tool_name
+                    operator: eq
+                    value: test
+        """
+            )
+        )
+        with pytest.raises(PolicyValidationError, match="enabled"):
+            loader.load_file(bad)
+
 
 class TestLoadDirectory:
     def test_loads_all_yaml_files(self, loader, tmp_policy_dir):

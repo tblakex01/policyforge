@@ -75,10 +75,10 @@ def _evaluate_condition(condition: Condition, context: dict[str, Any]) -> bool:
 
 
 def _safe_eval_condition(condition: Condition, context: dict[str, Any]) -> bool:
-    """Evaluate a condition, returning False for missing fields."""
+    """Evaluate a condition, returning False only for missing fields."""
     try:
         return _evaluate_condition(condition, context)
-    except (KeyError, TypeError):
+    except KeyError:
         return False
 
 
@@ -222,27 +222,40 @@ class PolicyEngine:
                 message="No active policies loaded — fail-closed.",
             )
 
+        allow_decision: Decision | None = None
         log_only_decision: Decision | None = None
 
         for policy in active_policies:
             try:
                 decision = self._evaluate_policy(policy, context)
-                if decision.verdict == Verdict.DENY:
-                    return decision  # short-circuit on first DENY
-                if decision.verdict == Verdict.LOG_ONLY and log_only_decision is None:
-                    log_only_decision = decision
-                    logger.warning(
-                        "LOG_ONLY: policy=%s rule=%s tool=%s",
-                        policy.name,
-                        decision.matched_rule,
-                        context.get("tool_name"),
-                    )
             except Exception as exc:
-                return self._handle_eval_error(policy, exc)
+                decision = self._handle_eval_error(policy, exc)
 
-        # Return LOG_ONLY if any policy flagged it, otherwise ALLOW
+            if decision.verdict == Verdict.DENY:
+                return decision  # short-circuit on first DENY
+
+            if decision.verdict == Verdict.LOG_ONLY and log_only_decision is None:
+                log_only_decision = decision
+                logger.warning(
+                    "LOG_ONLY: policy=%s rule=%s tool=%s",
+                    policy.name,
+                    decision.matched_rule,
+                    context.get("tool_name"),
+                )
+                continue
+
+            if (
+                decision.verdict == Verdict.ALLOW
+                and allow_decision is None
+                and "fail-open" in decision.message.lower()
+            ):
+                allow_decision = decision
+
         if log_only_decision is not None:
             return log_only_decision
+
+        if allow_decision is not None:
+            return allow_decision
 
         return Decision(
             verdict=Verdict.ALLOW,
@@ -251,15 +264,34 @@ class PolicyEngine:
         )
 
     def _evaluate_policy(self, policy: Policy, context: dict[str, Any]) -> Decision:
-        """Evaluate a single policy's rules against the context."""
+        """Evaluate a single policy's rules against the context.
+
+        Deny rules always win within a policy, even if a lower-priority
+        allow or log-only rule also matches later in the rule list.
+        """
+        allow_decision: Decision | None = None
+        log_only_decision: Decision | None = None
+
         for rule in policy.rules:
             if _evaluate_rule(rule, context):
-                return Decision(
+                decision = Decision(
                     verdict=rule.verdict,
                     matched_rule=rule.name,
                     policy_name=policy.name,
                     message=rule.message,
                 )
+                if decision.verdict == Verdict.DENY:
+                    return decision
+                if decision.verdict == Verdict.LOG_ONLY and log_only_decision is None:
+                    log_only_decision = decision
+                elif decision.verdict == Verdict.ALLOW and allow_decision is None:
+                    allow_decision = decision
+
+        if log_only_decision is not None:
+            return log_only_decision
+
+        if allow_decision is not None:
+            return allow_decision
 
         # No rule matched — use policy default
         return Decision(

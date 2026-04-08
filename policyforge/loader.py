@@ -33,12 +33,16 @@ class PolicyValidationError(Exception):
 
 
 def _validate_condition(raw: dict[str, Any], rule_name: str) -> None:
+    if not isinstance(raw, dict):
+        raise PolicyValidationError(f"Condition in rule '{rule_name}' must be a mapping.")
     missing = _REQUIRED_CONDITION_KEYS - raw.keys()
     if missing:
         raise PolicyValidationError(f"Condition in rule '{rule_name}' missing keys: {missing}")
 
 
 def _validate_rule(raw: dict[str, Any], policy_name: str) -> None:
+    if not isinstance(raw, dict):
+        raise PolicyValidationError(f"Rule in policy '{policy_name}' must be a mapping.")
     missing = _REQUIRED_RULE_KEYS - raw.keys()
     if missing:
         raise PolicyValidationError(f"Rule in policy '{policy_name}' missing keys: {missing}")
@@ -57,6 +61,14 @@ def _validate_policy(raw: dict[str, Any], filepath: str) -> None:
     missing = _REQUIRED_POLICY_KEYS - raw.keys()
     if missing:
         raise PolicyValidationError(f"Policy in {filepath} missing required keys: {missing}")
+    if "rules" in raw and not isinstance(raw["rules"], list):
+        raise PolicyValidationError(
+            f"Policy '{raw['name']}' in {filepath} must declare rules as a list."
+        )
+    if "enabled" in raw and not isinstance(raw["enabled"], bool):
+        raise PolicyValidationError(
+            f"Policy '{raw['name']}' in {filepath} has invalid enabled value: expected boolean."
+        )
     for rule in raw.get("rules", []):
         _validate_rule(rule, raw["name"])
 
@@ -106,7 +118,7 @@ def _parse_policy(raw: dict[str, Any]) -> Policy:
         default_verdict=Verdict(default_str),
         fail_mode=FailMode(fail_str),
         version=str(raw.get("version", "1.0.0")),
-        enabled=bool(raw.get("enabled", True)),
+        enabled=raw.get("enabled", True),
     )
 
 
@@ -145,6 +157,10 @@ class PolicyLoader:
             if doc is None:
                 continue
             if isinstance(doc, dict) and "policies" in doc:
+                if not isinstance(doc["policies"], list):
+                    raise PolicyValidationError(
+                        f"Top-level 'policies' in {path} must be declared as a list."
+                    )
                 docs.extend(doc["policies"])
             elif isinstance(doc, list):
                 docs.extend(doc)

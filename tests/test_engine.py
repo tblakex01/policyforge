@@ -155,6 +155,29 @@ class TestFailClosed:
         assert decision.verdict == Verdict.DENY
         assert "fail-closed" in decision.message.lower() or "error" in decision.message.lower()
 
+    def test_type_error_in_condition_denies_on_closed(self, tmp_path):
+        """Type mismatches must trigger fail-closed instead of silently skipping."""
+        (tmp_path / "bad_contains.yaml").write_text(
+            textwrap.dedent(
+                """\
+            name: type-error-policy
+            fail_mode: closed
+            default_verdict: ALLOW
+            rules:
+              - name: expect-string
+                verdict: DENY
+                conditions:
+                  - field: args.value
+                    operator: contains
+                    value: admin
+        """
+            )
+        )
+        engine = PolicyEngine(policy_paths=[tmp_path])
+        decision = engine.evaluate("test_tool", {"value": 123})
+        assert decision.verdict == Verdict.DENY
+        assert "fail-closed" in decision.message.lower() or "error" in decision.message.lower()
+
 
 class TestFailOpen:
     def test_fail_open_policy(self, tmp_path):
@@ -179,6 +202,82 @@ class TestFailOpen:
         decision = engine.evaluate("test_tool", {"value": "not_a_number"})
         assert decision.verdict == Verdict.ALLOW
         assert "fail-open" in decision.message.lower()
+
+    def test_fail_open_does_not_bypass_later_deny(self, tmp_path):
+        (tmp_path / "aaa-open.yaml").write_text(
+            textwrap.dedent(
+                """\
+            name: open-policy
+            fail_mode: open
+            default_verdict: ALLOW
+            rules:
+              - name: bad-compare
+                verdict: DENY
+                conditions:
+                  - field: args.value
+                    operator: gt
+                    value: 100
+        """
+            )
+        )
+        (tmp_path / "zzz-deny.yaml").write_text(
+            textwrap.dedent(
+                """\
+            name: deny-policy
+            default_verdict: ALLOW
+            rules:
+              - name: block-test-tool
+                verdict: DENY
+                conditions:
+                  - field: tool_name
+                    operator: eq
+                    value: test_tool
+        """
+            )
+        )
+        engine = PolicyEngine(policy_paths=[tmp_path])
+        decision = engine.evaluate("test_tool", {"value": "not_a_number"})
+        assert decision.verdict == Verdict.DENY
+        assert decision.matched_rule == "block-test-tool"
+
+
+class TestFailLog:
+    def test_fail_log_does_not_bypass_later_deny(self, tmp_path):
+        (tmp_path / "aaa-log.yaml").write_text(
+            textwrap.dedent(
+                """\
+            name: log-policy
+            fail_mode: log
+            default_verdict: ALLOW
+            rules:
+              - name: bad-compare
+                verdict: DENY
+                conditions:
+                  - field: args.value
+                    operator: gt
+                    value: 100
+        """
+            )
+        )
+        (tmp_path / "zzz-deny.yaml").write_text(
+            textwrap.dedent(
+                """\
+            name: deny-policy
+            default_verdict: ALLOW
+            rules:
+              - name: block-test-tool
+                verdict: DENY
+                conditions:
+                  - field: tool_name
+                    operator: eq
+                    value: test_tool
+        """
+            )
+        )
+        engine = PolicyEngine(policy_paths=[tmp_path])
+        decision = engine.evaluate("test_tool", {"value": "not_a_number"})
+        assert decision.verdict == Verdict.DENY
+        assert decision.matched_rule == "block-test-tool"
 
 
 class TestDisabledPolicy:
@@ -268,3 +367,38 @@ class TestExtraContext:
         # With staging context
         decision = engine.evaluate("any_tool", {}, context={"environment": "staging"})
         assert decision.verdict == Verdict.ALLOW
+
+
+class TestRulePrecedence:
+    def test_later_deny_overrides_earlier_allow(self, tmp_path):
+        (tmp_path / "precedence.yaml").write_text(
+            textwrap.dedent(
+                """\
+            name: precedence-policy
+            default_verdict: DENY
+            rules:
+              - name: allow-delete
+                priority: 10
+                verdict: ALLOW
+                conditions:
+                  - field: tool_name
+                    operator: eq
+                    value: delete_records
+              - name: deny-big-delete
+                priority: 20
+                verdict: DENY
+                conditions:
+                  - field: tool_name
+                    operator: eq
+                    value: delete_records
+                  - field: args.count
+                    operator: gt
+                    value: 100
+        """
+            )
+        )
+        engine = PolicyEngine(policy_paths=[tmp_path])
+        decision = engine.evaluate("delete_records", {"count": 500})
+
+        assert decision.verdict == Verdict.DENY
+        assert decision.matched_rule == "deny-big-delete"

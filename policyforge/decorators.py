@@ -42,6 +42,7 @@ def _bind_positional_args(
         return kwargs
     try:
         bound = sig.bind(*args, **kwargs)
+        bound.apply_defaults()
         return dict(bound.arguments)
     except (TypeError, ValueError):
         return kwargs

@@ -7,6 +7,7 @@ import logging
 import os
 import threading
 import time
+from json import JSONDecodeError
 from pathlib import Path
 from typing import Any
 
@@ -90,13 +91,11 @@ class AuditLogger:
             evaluation_ms=evaluation_ms,
         )
 
-        # Chain: store previous hash in dedicated field before sealing
-        if self._chain and self._last_hash:
-            entry.chain_prev = self._last_hash
-
-        entry.seal(self._hmac_key)
-
         with self._lock:
+            # Chain and HMAC sealing must happen under the same lock as the write.
+            if self._chain and self._last_hash:
+                entry.chain_prev = self._last_hash
+            entry.seal(self._hmac_key)
             self._write(entry)
             if self._chain:
                 self._last_hash = entry.integrity_hash
@@ -142,21 +141,29 @@ class AuditLogger:
 
         with open(path, encoding="utf-8") as fh:
             for line_num, line in enumerate(fh, start=1):
-                raw: dict[str, Any] = json.loads(line)
-                entry = AuditEntry(
-                    timestamp=raw["ts"],
-                    request_id=raw["rid"],
-                    tool_name=raw["tool"],
-                    agent_id=raw["agent"],
-                    args_hash=raw["args_hash"],
-                    verdict=raw["verdict"],
-                    matched_rule=raw["rule"],
-                    policy_name=raw["policy"],
-                    message=raw["msg"],
-                    evaluation_ms=raw["ms"],
-                    integrity_hash=raw["hmac"],
-                    chain_prev=raw.get("chain_prev", ""),
-                )
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    raw: dict[str, Any] = json.loads(stripped)
+                    entry = AuditEntry(
+                        timestamp=raw["ts"],
+                        request_id=raw["rid"],
+                        tool_name=raw["tool"],
+                        agent_id=raw["agent"],
+                        args_hash=raw["args_hash"],
+                        verdict=raw["verdict"],
+                        matched_rule=raw["rule"],
+                        policy_name=raw["policy"],
+                        message=raw["msg"],
+                        evaluation_ms=raw["ms"],
+                        integrity_hash=raw["hmac"],
+                        chain_prev=raw.get("chain_prev", ""),
+                    )
+                except (JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                    logger.error("MALFORMED entry at line %d in %s: %s", line_num, path, exc)
+                    tampered += 1
+                    continue
 
                 if entry.verify(self._hmac_key):
                     valid += 1
@@ -169,6 +176,6 @@ class AuditLogger:
                     logger.error("BROKEN CHAIN at line %d in %s", line_num, path)
                     tampered += 1
 
-                prev_hash = raw["hmac"]
+                prev_hash = entry.integrity_hash
 
         return valid, tampered

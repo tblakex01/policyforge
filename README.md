@@ -206,7 +206,9 @@ Each log entry contains: timestamp, request ID, tool name, agent ID, args hash (
 
 ## Cloud Sync
 
-Sync policies across your multi-cloud environment. The sync layer is strictly for policy *distribution* — security decisions are always made locally.
+Sync policies across your multi-cloud environment. The sync layer is strictly for policy *distribution* — security decisions are always made locally. Remote subdirectories are preserved locally, and unchanged-file skips use provider-specific checksums when the backend exposes one.
+PolicyForge preserves nested policy directories during pull and push, so teams can organize
+policies by environment or business unit without filename collisions.
 
 ```python
 from policyforge.sync import SyncManager

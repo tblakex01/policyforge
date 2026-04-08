@@ -43,7 +43,8 @@ class SyncManager:
     def pull(self) -> list[SyncResult]:
         """Download policies from all providers, skipping unchanged files.
 
-        Uses ETag/MD5 comparison to avoid re-downloading identical files.
+        Uses provider-supplied content hashes when available to avoid
+        re-downloading identical files.
         Returns one SyncResult per provider.
         """
         results: list[SyncResult] = []
@@ -63,16 +64,25 @@ class SyncManager:
 
             for remote in remote_files:
                 key: str = remote["key"]
-                # Flatten remote prefix into local filename
-                local_name = key.rsplit("/", 1)[-1]
-                local_path = self._local_dir / local_name
+                try:
+                    local_relative_path = provider.local_relative_path_for(key)
+                except ValueError as exc:
+                    msg = f"Unsafe remote key {key}: {exc}"
+                    logger.error(msg)
+                    errors.append(msg)
+                    continue
+
+                local_path = self._local_dir / local_relative_path
 
                 # Skip if local file matches remote ETag
-                if local_path.exists():
-                    local_hash = SyncProvider.file_md5(local_path)
-                    if local_hash == remote.get("etag", ""):
-                        logger.debug("Skipping unchanged: %s", key)
-                        continue
+                if local_path.exists() and self._matches_local_checksum(
+                    provider,
+                    local_path,
+                    remote,
+                    errors,
+                ):
+                    logger.debug("Skipping unchanged: %s", key)
+                    continue
 
                 try:
                     provider.download(key, local_path)
@@ -97,10 +107,10 @@ class SyncManager:
         """Upload local policies to all providers.
 
         Only uploads .yaml/.yml files from the local directory.
-        Uses ETag comparison to skip unchanged files.
+        Uses provider-supplied content hashes when available to skip unchanged files.
         """
         results: list[SyncResult] = []
-        local_files = sorted(self._local_dir.glob("*.y*ml"))
+        local_files = sorted(self._local_dir.rglob("*.y*ml"))
         local_files = [f for f in local_files if f.suffix in (".yaml", ".yml")]
 
         for provider in self._providers:
@@ -108,7 +118,10 @@ class SyncManager:
             errors: list[str] = []
 
             try:
-                remote_files = {r["key"].rsplit("/", 1)[-1]: r for r in provider.list_remote()}
+                remote_files = {
+                    str(provider.local_relative_path_for(r["key"]).as_posix()): r
+                    for r in provider.list_remote()
+                }
             except Exception as exc:
                 logger.error("Failed to list remote for %s: %s", provider.name, exc)
                 results.append(
@@ -117,20 +130,21 @@ class SyncManager:
                 continue
 
             for local_path in local_files:
-                local_hash = SyncProvider.file_md5(local_path)
-                remote_meta = remote_files.get(local_path.name)
+                relative_path = local_path.relative_to(self._local_dir)
+                relative_key = relative_path.as_posix()
+                remote_meta = remote_files.get(relative_key)
 
-                if remote_meta and remote_meta.get("etag") == local_hash:
-                    logger.debug("Skipping unchanged: %s", local_path.name)
+                if self._matches_local_checksum(provider, local_path, remote_meta, errors):
+                    logger.debug("Skipping unchanged: %s", relative_key)
                     continue
 
                 # Construct remote key using provider's own prefix logic
-                remote_key = provider.remote_key_for(local_path.name)
+                remote_key = provider.remote_key_for(relative_key)
                 try:
                     provider.upload(local_path, remote_key)
                     uploaded += 1
                 except Exception as exc:
-                    msg = f"Failed to upload {local_path.name}: {exc}"
+                    msg = f"Failed to upload {relative_key}: {exc}"
                     logger.error(msg)
                     errors.append(msg)
 
@@ -144,3 +158,29 @@ class SyncManager:
             )
 
         return results
+
+    @staticmethod
+    def _matches_local_checksum(
+        provider: SyncProvider,
+        local_path: Path,
+        remote_meta: dict[str, object] | None,
+        errors: list[str],
+    ) -> bool:
+        """Return True when provider metadata proves the local file is unchanged."""
+        remote_digest = provider.comparable_remote_digest(remote_meta)
+        if remote_digest is None:
+            return False
+
+        try:
+            return (
+                SyncProvider.file_checksum(local_path, remote_digest.algorithm)
+                == remote_digest.value
+            )
+        except ValueError as exc:
+            msg = (
+                f"Unsupported checksum algorithm '{remote_digest.algorithm}' for "
+                f"{provider.name}: {exc}"
+            )
+            logger.error(msg)
+            errors.append(msg)
+            return False

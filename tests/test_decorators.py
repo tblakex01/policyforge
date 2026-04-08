@@ -74,7 +74,7 @@ class TestPolicyGateDecorator:
         async def async_safe(val: str) -> str:
             return f"got {val}"
 
-        result = asyncio.get_event_loop().run_until_complete(async_safe(val="test"))
+        result = asyncio.run(async_safe(val="test"))
         assert result == "got test"
 
     def test_async_function_denied(self, engine):
@@ -83,7 +83,37 @@ class TestPolicyGateDecorator:
             return "never"
 
         with pytest.raises(PolicyDeniedError):
-            asyncio.get_event_loop().run_until_complete(async_danger())
+            asyncio.run(async_danger())
+
+    def test_default_arguments_are_available_to_policy(self, tmp_path):
+        (tmp_path / "defaults.yaml").write_text(
+            textwrap.dedent(
+                """\
+            name: defaults-test
+            default_verdict: ALLOW
+            rules:
+              - name: block-large-default
+                verdict: DENY
+                conditions:
+                  - field: tool_name
+                    operator: eq
+                    value: search
+                  - field: args.max_results
+                    operator: gt
+                    value: 5
+        """
+            )
+        )
+        engine = PolicyEngine(policy_paths=[tmp_path])
+
+        @policy_gate(engine, tool_name="search")
+        def search(query: str, max_results: int = 10) -> str:
+            return query
+
+        with pytest.raises(PolicyDeniedError) as exc_info:
+            search("test")
+
+        assert exc_info.value.decision.matched_rule == "block-large-default"
 
 
 class TestPolicyGateWrapper:
