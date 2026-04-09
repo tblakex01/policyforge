@@ -30,6 +30,7 @@ gate = PolicyGateWrapper(engine, extra_context={"environment": "production"})
 
 # ─── Define your Foundry Agent tools as normal functions ──────────────────────
 
+
 def search_reservations(guest_name: str, date_range: str) -> dict:
     """Look up reservations by guest name and date range."""
     # ... your Foundry Agent tool implementation ...
@@ -53,11 +54,13 @@ def adjust_loyalty_points(member_id: str, delta: int, reason: str) -> dict:
 # identically to the originals, except every call is evaluated
 # against your YAML policies before execution.
 
-gated_tools = gate.wrap_dict({
-    "search_reservations": search_reservations,
-    "send_guest_email": send_guest_email,
-    "adjust_loyalty_points": adjust_loyalty_points,
-})
+gated_tools = gate.wrap_dict(
+    {
+        "search_reservations": search_reservations,
+        "send_guest_email": send_guest_email,
+        "adjust_loyalty_points": adjust_loyalty_points,
+    }
+)
 
 
 # ─── Register with Foundry Agent ─────────────────────────────────────────────

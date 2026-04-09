@@ -428,3 +428,77 @@ class TestRulePrecedence:
 
         assert decision.verdict == Verdict.DENY
         assert decision.matched_rule == "deny-big-delete"
+
+
+class TestShareReceipt:
+    def test_render_share_receipt_returns_sanitized_markdown(self, policy_dir, tmp_path):
+        audit_dir = tmp_path / "audit"
+        audit = AuditLogger(log_dir=audit_dir, hmac_key="test-audit-key")
+        engine = PolicyEngine(
+            policy_paths=[policy_dir],
+            audit_logger=audit,
+            agent_id="agent-share-test",
+        )
+
+        decision = engine.evaluate("run_shell", {"command": "rm -rf /tmp/demo"})
+        receipt = engine.render_share_receipt(decision)
+
+        assert decision.verdict == Verdict.DENY
+        assert "PolicyForge Policy Receipt" in receipt
+        assert "run_shell" in receipt
+        assert "block-shell" in receipt
+        assert decision.request_id in receipt
+        assert "rm -rf /tmp/demo" not in receipt
+        assert decision.args_hash in receipt
+
+    def test_render_share_receipt_logs_share_event(self, policy_dir, tmp_path):
+        audit_dir = tmp_path / "audit"
+        audit = AuditLogger(log_dir=audit_dir, hmac_key="test-audit-key")
+        engine = PolicyEngine(
+            policy_paths=[policy_dir],
+            audit_logger=audit,
+            agent_id="agent-share-test",
+        )
+
+        decision = engine.evaluate("query_db", {"sql": "SELECT * FROM guests"})
+        engine.render_share_receipt(decision)
+
+        log_file = next(audit_dir.glob("audit_*.jsonl"))
+        records = [
+            json.loads(line)
+            for line in log_file.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+        assert len(records) == 2
+        assert records[1]["kind"] == "event"
+        assert records[1]["event"] == "share_receipt_generated"
+        assert records[1]["rid"] == decision.request_id
+        assert records[1]["meta"]["verdict"] == "LOG_ONLY"
+
+    def test_render_share_receipt_escapes_markdown_content(self, tmp_path):
+        (tmp_path / "receipt.yaml").write_text(
+            textwrap.dedent(
+                """\
+            name: "prod`policy"
+            default_verdict: ALLOW
+            rules:
+              - name: "block`rule"
+                verdict: DENY
+                message: "Do not paste `raw` values"
+                conditions:
+                  - field: tool_name
+                    operator: eq
+                    value: "run`tool"
+        """
+            )
+        )
+        engine = PolicyEngine(policy_paths=[tmp_path], agent_id="agent`one")
+
+        decision = engine.evaluate("run`tool", {"command": "rm -rf /tmp/demo"})
+        receipt = engine.render_share_receipt(decision)
+
+        assert "`run`tool`" not in receipt
+        assert "run\\`tool" in receipt
+        assert "prod\\`policy" in receipt
+        assert "Do not paste \\`raw\\` values" in receipt

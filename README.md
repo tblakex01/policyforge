@@ -105,7 +105,24 @@ safe_tools = wrapper.wrap_dict({
 decision = engine.evaluate("delete_records", args={"count": 500})
 if decision.verdict.value == "DENY":
     print(f"Blocked: {decision.message}")
+    print(engine.render_share_receipt(decision))
 ```
+
+### Share a Policy Receipt
+
+When a tool call is denied or flagged as `LOG_ONLY`, render a sanitized Markdown
+receipt for Slack, tickets, or PRs without exposing raw tool arguments:
+
+```python
+decision = engine.evaluate("run_shell", {"command": "rm -rf /tmp/demo"})
+receipt = engine.render_share_receipt(decision)
+print(receipt)
+```
+
+The receipt includes the verdict, tool name, policy, matched rule, request ID,
+agent ID, args hash, and message. If an `AuditLogger` is attached, PolicyForge
+also writes a `share_receipt_generated` event so you can measure which blocked
+decisions become shareable escalation moments.
 
 ---
 
@@ -201,6 +218,10 @@ print(f"{valid} valid, {tampered} tampered")
 ```
 
 Each log entry contains: timestamp, request ID, tool name, agent ID, args hash (SHA-256, not raw args), verdict, matched rule, policy name, evaluation time, and HMAC signature.
+Share receipt generation is logged as an `event` record with
+`event="share_receipt_generated"` and metadata including the verdict and receipt
+format, which gives you a lightweight funnel from denied decisions to internal
+sharing without adding a separate analytics dependency.
 
 ---
 

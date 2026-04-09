@@ -177,6 +177,7 @@ class PolicyEngine:
             5. On any evaluation error, apply the policy's fail_mode.
         """
         args = args or {}
+        args_hash = _hash_args(args)
         eval_context = {
             **(context or {}),
             "tool_name": tool_name,
@@ -193,6 +194,9 @@ class PolicyEngine:
             message=decision.message,
             evaluation_ms=round(elapsed_ms, 3),
             request_id=decision.request_id,
+            tool_name=tool_name,
+            agent_id=self._agent_id,
+            args_hash=args_hash,
         )
 
         # Audit trail
@@ -201,7 +205,7 @@ class PolicyEngine:
                 request_id=decision.request_id,
                 tool_name=tool_name,
                 agent_id=self._agent_id,
-                args_hash=_hash_args(args),
+                args_hash=args_hash,
                 verdict=decision.verdict.value,
                 matched_rule=decision.matched_rule or "",
                 policy_name=decision.policy_name or "",
@@ -210,6 +214,26 @@ class PolicyEngine:
             )
 
         return decision
+
+    def render_share_receipt(self, decision: Decision) -> str:
+        """Return a sanitized Markdown receipt and emit a share measurement event."""
+        receipt = decision.to_share_markdown()
+
+        if self._audit:
+            self._audit.log_event(
+                request_id=decision.request_id,
+                event_type="share_receipt_generated",
+                tool_name=decision.tool_name,
+                agent_id=decision.agent_id or self._agent_id,
+                metadata={
+                    "format": "markdown",
+                    "verdict": decision.verdict.value,
+                    "policy_name": decision.policy_name or "",
+                    "matched_rule": decision.matched_rule or "",
+                },
+            )
+
+        return receipt
 
     def _run_evaluation(self, context: dict[str, Any]) -> Decision:
         """Inner evaluation loop — separated for clean error handling."""

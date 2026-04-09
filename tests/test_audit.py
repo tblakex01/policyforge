@@ -3,10 +3,12 @@
 import json
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
 from policyforge.audit import AuditLogger
+from policyforge.models import AuditEntry
 
 
 @pytest.fixture
@@ -161,6 +163,75 @@ class TestAuditLogger:
 
         assert valid == 1
         assert tampered == 1
+
+    def test_log_event_writes_measurement_record(self, audit):
+        audit.log_event(
+            request_id="req-share",
+            event_type="share_receipt_generated",
+            tool_name="query_db",
+            agent_id="agent-1",
+            metadata={"verdict": "LOG_ONLY", "format": "markdown"},
+        )
+
+        log_file = list(audit._log_dir.glob("audit_*.jsonl"))[0]
+        record = json.loads(log_file.read_text().strip())
+
+        assert record["kind"] == "event"
+        assert record["event"] == "share_receipt_generated"
+        assert record["meta"]["format"] == "markdown"
+
+    def test_log_event_serializes_non_json_metadata(self, audit):
+        audit.log_event(
+            request_id="req-typed-meta",
+            event_type="share_receipt_generated",
+            metadata={"path": Path("nested") / "policy.yaml"},
+        )
+
+        log_file = list(audit._log_dir.glob("audit_*.jsonl"))[0]
+        record = json.loads(log_file.read_text().strip())
+
+        assert record["meta"]["path"] == str(Path("nested") / "policy.yaml")
+
+    def test_verify_log_accepts_legacy_decision_records(self, tmp_path):
+        audit = AuditLogger(log_dir=tmp_path, hmac_key="test-audit-key")
+        log_file = Path(audit._current_file)
+
+        legacy_entry = AuditEntry(
+            timestamp=123.0,
+            request_id="legacy-1",
+            tool_name="run_shell",
+            agent_id="agent-1",
+            args_hash="abc123",
+            verdict="DENY",
+            matched_rule="block-shell",
+            policy_name="default",
+            message="Shell blocked",
+            evaluation_ms=1.25,
+        )
+        legacy_entry.integrity_hash = legacy_entry.compute_integrity(
+            b"test-audit-key",
+            include_event_fields=False,
+        )
+        record = {
+            "ts": legacy_entry.timestamp,
+            "rid": legacy_entry.request_id,
+            "tool": legacy_entry.tool_name,
+            "agent": legacy_entry.agent_id,
+            "args_hash": legacy_entry.args_hash,
+            "verdict": legacy_entry.verdict,
+            "rule": legacy_entry.matched_rule,
+            "policy": legacy_entry.policy_name,
+            "msg": legacy_entry.message,
+            "ms": legacy_entry.evaluation_ms,
+            "hmac": legacy_entry.integrity_hash,
+            "chain_prev": legacy_entry.chain_prev,
+        }
+        log_file.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+        valid, tampered = audit.verify_log()
+
+        assert valid == 1
+        assert tampered == 0
 
 
 class TestAuditRequiresKey:

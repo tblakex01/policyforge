@@ -54,10 +54,12 @@ def write_file(path: str, content: str) -> None:
 
 
 wrapper = PolicyGateWrapper(engine)
-safe_tools = wrapper.wrap_dict({
-    "read_file": read_file,
-    "write_file": write_file,
-})
+safe_tools = wrapper.wrap_dict(
+    {
+        "read_file": read_file,
+        "write_file": write_file,
+    }
+)
 
 
 # ─── 5. Try it out ──────────────────────────────────────────────────────────
@@ -73,6 +75,8 @@ if __name__ == "__main__":
         run_shell(command="ls -la")
     except PolicyDeniedError as exc:
         print(f"run_shell DENIED: {exc.decision.message}")
+        print("\nShareable receipt:")
+        print(engine.render_share_receipt(exc.decision))
 
     print("\n--- Wrapper examples ---")
 
@@ -100,6 +104,8 @@ if __name__ == "__main__":
         args={"table": "reservations", "count": 500},
     )
     print(f"delete_records(500) → {decision.verdict.value}: {decision.message}")
+    print("\nShareable receipt:")
+    print(engine.render_share_receipt(decision))
 
     # ─── 6. Verify audit log integrity ───────────────────────────────────────
     print("\n--- Audit verification ---")

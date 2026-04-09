@@ -89,10 +89,41 @@ class AuditLogger:
             policy_name=policy_name,
             message=message,
             evaluation_ms=evaluation_ms,
+            entry_type="decision",
         )
 
         with self._lock:
             # Chain and HMAC sealing must happen under the same lock as the write.
+            if self._chain and self._last_hash:
+                entry.chain_prev = self._last_hash
+            entry.seal(self._hmac_key)
+            self._write(entry)
+            if self._chain:
+                self._last_hash = entry.integrity_hash
+
+        return entry
+
+    def log_event(
+        self,
+        request_id: str,
+        event_type: str,
+        *,
+        tool_name: str = "",
+        agent_id: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> AuditEntry:
+        """Persist a signed product event in the audit trail."""
+        entry = AuditEntry(
+            timestamp=time.time(),
+            request_id=request_id,
+            tool_name=tool_name,
+            agent_id=agent_id,
+            entry_type="event",
+            event_type=event_type,
+            metadata=metadata or {},
+        )
+
+        with self._lock:
             if self._chain and self._last_hash:
                 entry.chain_prev = self._last_hash
             entry.seal(self._hmac_key)
@@ -114,6 +145,7 @@ class AuditLogger:
         record = {
             "ts": entry.timestamp,
             "rid": entry.request_id,
+            "kind": entry.entry_type,
             "tool": entry.tool_name,
             "agent": entry.agent_id,
             "args_hash": entry.args_hash,
@@ -122,11 +154,13 @@ class AuditLogger:
             "policy": entry.policy_name,
             "msg": entry.message,
             "ms": entry.evaluation_ms,
+            "event": entry.event_type,
+            "meta": entry.metadata,
             "hmac": entry.integrity_hash,
             "chain_prev": entry.chain_prev,
         }
         with open(self._current_file, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record, separators=(",", ":")) + "\n")
+            fh.write(json.dumps(record, separators=(",", ":"), default=str) + "\n")
 
     def verify_log(self, path: str | Path | None = None) -> tuple[int, int]:
         """Verify integrity of a log file. Returns (valid_count, tampered_count).
@@ -146,6 +180,7 @@ class AuditLogger:
                     continue
                 try:
                     raw: dict[str, Any] = json.loads(stripped)
+                    include_event_fields = raw.get("kind") == "event"
                     entry = AuditEntry(
                         timestamp=raw["ts"],
                         request_id=raw["rid"],
@@ -157,6 +192,9 @@ class AuditLogger:
                         policy_name=raw["policy"],
                         message=raw["msg"],
                         evaluation_ms=raw["ms"],
+                        entry_type=raw.get("kind", "decision"),
+                        event_type=raw.get("event", ""),
+                        metadata=raw.get("meta", {}),
                         integrity_hash=raw["hmac"],
                         chain_prev=raw.get("chain_prev", ""),
                     )
@@ -165,7 +203,7 @@ class AuditLogger:
                     tampered += 1
                     continue
 
-                if entry.verify(self._hmac_key):
+                if entry.verify(self._hmac_key, include_event_fields=include_event_fields):
                     valid += 1
                 else:
                     logger.error("TAMPERED entry at line %d in %s", line_num, path)

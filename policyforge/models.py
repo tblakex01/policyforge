@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import re
 import time
 import uuid
@@ -136,6 +137,46 @@ class Decision:
     message: str = ""
     evaluation_ms: float = 0.0
     request_id: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
+    tool_name: str = ""
+    agent_id: str = ""
+    args_hash: str = ""
+
+    @staticmethod
+    def _escape_markdown_inline(value: str) -> str:
+        """Escape Markdown control characters for inline code-like fields."""
+        return " ".join(value.splitlines()).replace("\\", "\\\\").replace("`", "\\`")
+
+    @staticmethod
+    def _escape_markdown_text(value: str) -> str:
+        """Escape Markdown control characters for freeform text fields."""
+        return value.replace("\\", "\\\\").replace("`", "\\`")
+
+    def to_share_markdown(self) -> str:
+        """Render a sanitized Markdown receipt suitable for tickets or chat."""
+        policy_name = self.policy_name or "unknown"
+        matched_rule = self.matched_rule or "default"
+        tool_name = self.tool_name or "unknown_tool"
+        agent_id = self.agent_id or "unknown"
+        message = self.message or "No policy message provided."
+
+        return "\n".join(
+            [
+                "# PolicyForge Policy Receipt",
+                "",
+                f"- Verdict: `{self._escape_markdown_inline(self.verdict.value)}`",
+                f"- Tool: `{self._escape_markdown_inline(tool_name)}`",
+                f"- Policy: `{self._escape_markdown_inline(policy_name)}`",
+                f"- Rule: `{self._escape_markdown_inline(matched_rule)}`",
+                f"- Agent: `{self._escape_markdown_inline(agent_id)}`",
+                f"- Request ID: `{self._escape_markdown_inline(self.request_id)}`",
+                f"- Args Hash: `{self._escape_markdown_inline(self.args_hash)}`",
+                f"- Evaluation: `{self.evaluation_ms:.3f} ms`",
+                "",
+                "## Reason",
+                "",
+                self._escape_markdown_text(message),
+            ]
+        )
 
 
 @dataclass
@@ -156,25 +197,45 @@ class AuditEntry:
     policy_name: str = ""
     message: str = ""
     evaluation_ms: float = 0.0
+    entry_type: str = "decision"
+    event_type: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
     integrity_hash: str = ""
     chain_prev: str = ""
 
-    def compute_integrity(self, hmac_key: bytes) -> str:
-        """Return HMAC-SHA256 over the audit payload for tamper detection."""
-        import hmac as _hmac
-
-        payload = (
+    def _payload(self, include_event_fields: bool) -> str:
+        """Build the canonical payload used for HMAC signing."""
+        base = (
             f"{self.timestamp}|{self.request_id}|{self.tool_name}|"
             f"{self.agent_id}|{self.args_hash}|{self.verdict}|"
             f"{self.matched_rule}|{self.policy_name}|{self.message}|"
-            f"{self.evaluation_ms}|{self.chain_prev}"
+            f"{self.evaluation_ms}"
         )
+        if not include_event_fields:
+            return f"{base}|{self.chain_prev}"
+
+        metadata = json.dumps(self.metadata, sort_keys=True, separators=(",", ":"), default=str)
+        return f"{base}|{self.entry_type}|{self.event_type}|" f"{metadata}|{self.chain_prev}"
+
+    def compute_integrity(
+        self, hmac_key: bytes, *, include_event_fields: bool | None = None
+    ) -> str:
+        """Return HMAC-SHA256 over the audit payload for tamper detection."""
+        import hmac as _hmac
+
+        use_event_fields = (
+            self.entry_type == "event" if include_event_fields is None else include_event_fields
+        )
+        payload = self._payload(include_event_fields=use_event_fields)
         return _hmac.new(hmac_key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
     def seal(self, hmac_key: bytes) -> None:
         """Compute and set the integrity hash."""
         self.integrity_hash = self.compute_integrity(hmac_key)
 
-    def verify(self, hmac_key: bytes) -> bool:
+    def verify(self, hmac_key: bytes, *, include_event_fields: bool | None = None) -> bool:
         """Return True if the stored hash matches a fresh computation."""
-        return hmac.compare_digest(self.integrity_hash, self.compute_integrity(hmac_key))
+        return hmac.compare_digest(
+            self.integrity_hash,
+            self.compute_integrity(hmac_key, include_event_fields=include_event_fields),
+        )
