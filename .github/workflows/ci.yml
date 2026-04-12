@@ -51,5 +51,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
         run: pip install -e ".[dev]"
-      - name: Run tests
-        run: pytest -v
+      - name: Run tests with coverage
+        run: >
+          pytest -v
+          --cov=policyforge
+          --cov-branch
+          --cov-fail-under=90
+          --cov-report=term-missing
