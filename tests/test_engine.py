@@ -14,7 +14,9 @@ from policyforge.models import Verdict
 @pytest.fixture
 def policy_dir(tmp_path):
     """Temp dir with a test policy."""
-    (tmp_path / "test.yaml").write_text(textwrap.dedent("""\
+    (tmp_path / "test.yaml").write_text(
+        textwrap.dedent(
+            """\
         name: test-policy
         fail_mode: closed
         default_verdict: ALLOW
@@ -61,7 +63,9 @@ def policy_dir(tmp_path):
               - field: args.count
                 operator: gt
                 value: 100
-    """))
+    """
+        )
+    )
     return tmp_path
 
 
@@ -98,11 +102,15 @@ class TestBasicEvaluation:
         assert len(decision.request_id) == 16
 
     def test_audit_uses_full_sha256_args_hash(self, tmp_path):
-        (tmp_path / "policy.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "policy.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: audit-policy
             default_verdict: ALLOW
             rules: []
-        """))
+        """
+            )
+        )
         audit_dir = tmp_path / "audit"
         audit = AuditLogger(log_dir=audit_dir, hmac_key="test-audit-key")
         engine = PolicyEngine(policy_paths=[tmp_path], audit_logger=audit)
@@ -141,7 +149,9 @@ class TestConditionOperators:
         assert decision.verdict == Verdict.ALLOW
 
     def test_neq_operator(self, tmp_path):
-        (tmp_path / "neq.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "neq.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: neq-policy
             default_verdict: ALLOW
             rules:
@@ -151,13 +161,17 @@ class TestConditionOperators:
                   - field: args.role
                     operator: neq
                     value: admin
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
         assert engine.evaluate("check", {"role": "guest"}).verdict == Verdict.DENY
         assert engine.evaluate("check", {"role": "admin"}).verdict == Verdict.ALLOW
 
     def test_not_in_operator(self, tmp_path):
-        (tmp_path / "notin.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "notin.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: notin-policy
             default_verdict: ALLOW
             rules:
@@ -167,13 +181,17 @@ class TestConditionOperators:
                   - field: args.env
                     operator: not_in
                     value: ["prod", "staging"]
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
         assert engine.evaluate("deploy", {"env": "dev"}).verdict == Verdict.DENY
         assert engine.evaluate("deploy", {"env": "prod"}).verdict == Verdict.ALLOW
 
     def test_contains_operator(self, tmp_path):
-        (tmp_path / "contains.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "contains.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: contains-policy
             default_verdict: ALLOW
             rules:
@@ -183,13 +201,17 @@ class TestConditionOperators:
                   - field: args.url
                     operator: contains
                     value: "/admin"
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
         assert engine.evaluate("fetch", {"url": "/api/admin/users"}).verdict == Verdict.DENY
         assert engine.evaluate("fetch", {"url": "/api/public"}).verdict == Verdict.ALLOW
 
     def test_lt_operator(self, tmp_path):
-        (tmp_path / "lt.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "lt.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: lt-policy
             default_verdict: ALLOW
             rules:
@@ -199,14 +221,18 @@ class TestConditionOperators:
                   - field: args.priority
                     operator: lt
                     value: 5
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
         assert engine.evaluate("task", {"priority": 3}).verdict == Verdict.DENY
         assert engine.evaluate("task", {"priority": 5}).verdict == Verdict.ALLOW
         assert engine.evaluate("task", {"priority": 10}).verdict == Verdict.ALLOW
 
     def test_gte_operator(self, tmp_path):
-        (tmp_path / "gte.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "gte.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: gte-policy
             default_verdict: ALLOW
             rules:
@@ -216,14 +242,18 @@ class TestConditionOperators:
                   - field: args.risk_score
                     operator: gte
                     value: 80
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
         assert engine.evaluate("assess", {"risk_score": 80}).verdict == Verdict.DENY
         assert engine.evaluate("assess", {"risk_score": 95}).verdict == Verdict.DENY
         assert engine.evaluate("assess", {"risk_score": 79}).verdict == Verdict.ALLOW
 
     def test_lte_operator(self, tmp_path):
-        (tmp_path / "lte.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "lte.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: lte-policy
             default_verdict: ALLOW
             rules:
@@ -233,7 +263,9 @@ class TestConditionOperators:
                   - field: args.batch_size
                     operator: lte
                     value: 10
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
         assert engine.evaluate("process", {"batch_size": 5}).verdict == Verdict.DENY
         assert engine.evaluate("process", {"batch_size": 10}).verdict == Verdict.DENY
@@ -249,7 +281,9 @@ class TestFailClosed:
 
     def test_eval_error_denies_on_closed(self, tmp_path):
         """A condition that errors at evaluation time → fail-closed."""
-        (tmp_path / "bad.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "bad.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: runtime-error-policy
             fail_mode: closed
             default_verdict: ALLOW
@@ -260,7 +294,9 @@ class TestFailClosed:
                   - field: args.value
                     operator: gt
                     value: 100
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
         decision = engine.evaluate("test_tool", {"value": "not_a_number"})
         assert decision.verdict == Verdict.DENY
@@ -269,7 +305,9 @@ class TestFailClosed:
 
     def test_type_error_in_condition_denies_on_closed(self, tmp_path):
         """Type mismatches must trigger fail-closed instead of silently skipping."""
-        (tmp_path / "bad_contains.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "bad_contains.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: type-error-policy
             fail_mode: closed
             default_verdict: ALLOW
@@ -280,7 +318,9 @@ class TestFailClosed:
                   - field: args.value
                     operator: contains
                     value: admin
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
         decision = engine.evaluate("test_tool", {"value": 123})
         assert decision.verdict == Verdict.DENY
@@ -291,7 +331,9 @@ class TestFailClosed:
 class TestFailOpen:
     def test_fail_open_policy(self, tmp_path):
         """A condition that errors at evaluation time → fail-open."""
-        (tmp_path / "open.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "open.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: open-policy
             fail_mode: open
             default_verdict: DENY
@@ -302,7 +344,9 @@ class TestFailOpen:
                   - field: args.value
                     operator: gt
                     value: 100
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
         decision = engine.evaluate("test_tool", {"value": "not_a_number"})
         assert decision.verdict == Verdict.ALLOW
@@ -310,7 +354,9 @@ class TestFailOpen:
         assert "not_a_number" not in decision.message
 
     def test_fail_open_does_not_bypass_later_deny(self, tmp_path):
-        (tmp_path / "aaa-open.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "aaa-open.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: open-policy
             fail_mode: open
             default_verdict: ALLOW
@@ -321,8 +367,12 @@ class TestFailOpen:
                   - field: args.value
                     operator: gt
                     value: 100
-        """))
-        (tmp_path / "zzz-deny.yaml").write_text(textwrap.dedent("""\
+        """
+            )
+        )
+        (tmp_path / "zzz-deny.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: deny-policy
             default_verdict: ALLOW
             rules:
@@ -332,7 +382,9 @@ class TestFailOpen:
                   - field: tool_name
                     operator: eq
                     value: test_tool
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
         decision = engine.evaluate("test_tool", {"value": "not_a_number"})
         assert decision.verdict == Verdict.DENY
@@ -341,7 +393,9 @@ class TestFailOpen:
 
 class TestFailLog:
     def test_fail_log_does_not_bypass_later_deny(self, tmp_path):
-        (tmp_path / "aaa-log.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "aaa-log.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: log-policy
             fail_mode: log
             default_verdict: ALLOW
@@ -352,8 +406,12 @@ class TestFailLog:
                   - field: args.value
                     operator: gt
                     value: 100
-        """))
-        (tmp_path / "zzz-deny.yaml").write_text(textwrap.dedent("""\
+        """
+            )
+        )
+        (tmp_path / "zzz-deny.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: deny-policy
             default_verdict: ALLOW
             rules:
@@ -363,7 +421,9 @@ class TestFailLog:
                   - field: tool_name
                     operator: eq
                     value: test_tool
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
         decision = engine.evaluate("test_tool", {"value": "not_a_number"})
         assert decision.verdict == Verdict.DENY
@@ -372,7 +432,9 @@ class TestFailLog:
 
 class TestDisabledPolicy:
     def test_disabled_policy_skipped(self, tmp_path):
-        (tmp_path / "disabled.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "disabled.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: disabled-policy
             enabled: false
             default_verdict: DENY
@@ -383,12 +445,18 @@ class TestDisabledPolicy:
                   - field: tool_name
                     operator: regex
                     value: ".*"
-        """))
-        (tmp_path / "allow.yaml").write_text(textwrap.dedent("""\
+        """
+            )
+        )
+        (tmp_path / "allow.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: allow-policy
             default_verdict: ALLOW
             rules: []
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
         # disabled-policy would deny, but it's skipped
         decision = engine.evaluate("anything", {})
@@ -397,27 +465,37 @@ class TestDisabledPolicy:
 
 class TestReload:
     def test_reload_replaces_policies(self, tmp_path):
-        (tmp_path / "v1.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "v1.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: v1
             default_verdict: DENY
             rules: []
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
         assert engine.policies[0].name == "v1"
 
         # Replace with v2
-        (tmp_path / "v1.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "v1.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: v2
             default_verdict: ALLOW
             rules: []
-        """))
+        """
+            )
+        )
         engine.reload([tmp_path])
         assert engine.policies[0].name == "v2"
 
 
 class TestExtraContext:
     def test_context_available_in_evaluation(self, tmp_path):
-        (tmp_path / "ctx.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "ctx.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: env-policy
             default_verdict: ALLOW
             rules:
@@ -428,7 +506,9 @@ class TestExtraContext:
                   - field: environment
                     operator: eq
                     value: production
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
         # With prod context
         decision = engine.evaluate("any_tool", {}, context={"environment": "production"})
@@ -441,7 +521,9 @@ class TestExtraContext:
 
 class TestRulePrecedence:
     def test_later_deny_overrides_earlier_allow(self, tmp_path):
-        (tmp_path / "precedence.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "precedence.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: precedence-policy
             default_verdict: DENY
             rules:
@@ -462,7 +544,9 @@ class TestRulePrecedence:
                   - field: args.count
                     operator: gt
                     value: 100
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
         decision = engine.evaluate("delete_records", {"count": 500})
 
@@ -517,7 +601,9 @@ class TestShareReceipt:
         assert records[1]["meta"]["verdict"] == "LOG_ONLY"
 
     def test_render_share_receipt_escapes_markdown_content(self, tmp_path):
-        (tmp_path / "receipt.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "receipt.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: "prod`policy"
             default_verdict: ALLOW
             rules:
@@ -528,7 +614,9 @@ class TestShareReceipt:
                   - field: tool_name
                     operator: eq
                     value: "run`tool"
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path], agent_id="agent`one")
 
         decision = engine.evaluate("run`tool", {"command": "rm -rf /tmp/demo"})
@@ -557,11 +645,15 @@ class TestLoadFilePath:
     def test_load_single_file(self, tmp_path):
         """engine.load() with a file path (not directory) should work."""
         policy_file = tmp_path / "single.yaml"
-        policy_file.write_text(textwrap.dedent("""\
+        policy_file.write_text(
+            textwrap.dedent(
+                """\
             name: single-file-policy
             default_verdict: ALLOW
             rules: []
-        """))
+        """
+            )
+        )
         engine = PolicyEngine()
         engine.load(policy_file)
         assert len(engine.policies) == 1
@@ -569,11 +661,15 @@ class TestLoadFilePath:
 
     def test_constructor_with_file_paths(self, tmp_path):
         policy_file = tmp_path / "direct.yaml"
-        policy_file.write_text(textwrap.dedent("""\
+        policy_file.write_text(
+            textwrap.dedent(
+                """\
             name: direct-policy
             default_verdict: DENY
             rules: []
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[policy_file])
         assert engine.policies[0].name == "direct-policy"
 
@@ -581,7 +677,9 @@ class TestLoadFilePath:
 class TestAllowRulePrecedence:
     def test_explicit_allow_overrides_default_deny(self, tmp_path):
         """An explicit ALLOW rule in a policy prevents that policy's default DENY."""
-        (tmp_path / "allow.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "allow.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: allow-policy
             default_verdict: DENY
             rules:
@@ -592,7 +690,9 @@ class TestAllowRulePrecedence:
                   - field: tool_name
                     operator: eq
                     value: read_file
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
         # Without the ALLOW rule matching, default verdict would be DENY
         decision_unmatched = engine.evaluate("write_file", {})
@@ -603,7 +703,9 @@ class TestAllowRulePrecedence:
         assert decision_matched.verdict == Verdict.ALLOW
 
     def test_log_only_overrides_allow_in_same_policy(self, tmp_path):
-        (tmp_path / "mixed.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "mixed.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: mixed-policy
             default_verdict: DENY
             rules:
@@ -621,7 +723,9 @@ class TestAllowRulePrecedence:
                   - field: tool_name
                     operator: eq
                     value: query_db
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
         decision = engine.evaluate("query_db", {})
         assert decision.verdict == Verdict.LOG_ONLY
@@ -630,7 +734,9 @@ class TestAllowRulePrecedence:
 
 class TestMultiPolicyInteraction:
     def test_log_only_plus_allow_yields_log_only(self, tmp_path):
-        (tmp_path / "aaa-log.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "aaa-log.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: log-policy
             default_verdict: ALLOW
             rules:
@@ -640,18 +746,26 @@ class TestMultiPolicyInteraction:
                   - field: tool_name
                     operator: eq
                     value: web_search
-        """))
-        (tmp_path / "zzz-allow.yaml").write_text(textwrap.dedent("""\
+        """
+            )
+        )
+        (tmp_path / "zzz-allow.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: allow-policy
             default_verdict: ALLOW
             rules: []
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
         decision = engine.evaluate("web_search", {})
         assert decision.verdict == Verdict.LOG_ONLY
 
     def test_log_only_plus_deny_yields_deny(self, tmp_path):
-        (tmp_path / "aaa-log.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "aaa-log.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: log-policy
             default_verdict: ALLOW
             rules:
@@ -661,8 +775,12 @@ class TestMultiPolicyInteraction:
                   - field: tool_name
                     operator: eq
                     value: web_search
-        """))
-        (tmp_path / "zzz-deny.yaml").write_text(textwrap.dedent("""\
+        """
+            )
+        )
+        (tmp_path / "zzz-deny.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: deny-policy
             default_verdict: ALLOW
             rules:
@@ -672,25 +790,35 @@ class TestMultiPolicyInteraction:
                   - field: tool_name
                     operator: eq
                     value: web_search
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
         decision = engine.evaluate("web_search", {})
         assert decision.verdict == Verdict.DENY
         assert decision.matched_rule == "deny-search"
 
     def test_all_disabled_policies_fail_closed(self, tmp_path):
-        (tmp_path / "d1.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "d1.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: disabled1
             enabled: false
             default_verdict: ALLOW
             rules: []
-        """))
-        (tmp_path / "d2.yaml").write_text(textwrap.dedent("""\
+        """
+            )
+        )
+        (tmp_path / "d2.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: disabled2
             enabled: false
             default_verdict: ALLOW
             rules: []
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
         decision = engine.evaluate("anything", {})
         assert decision.verdict == Verdict.DENY
@@ -698,11 +826,15 @@ class TestMultiPolicyInteraction:
 
     def test_multiple_allow_rules_across_policies(self, tmp_path):
         for i in range(3):
-            (tmp_path / f"policy{i}.yaml").write_text(textwrap.dedent(f"""\
+            (tmp_path / f"policy{i}.yaml").write_text(
+                textwrap.dedent(
+                    f"""\
                 name: policy-{i}
                 default_verdict: ALLOW
                 rules: []
-            """))
+            """
+                )
+            )
         engine = PolicyEngine(policy_paths=[tmp_path])
         decision = engine.evaluate("any_tool", {})
         assert decision.verdict == Verdict.ALLOW
@@ -711,7 +843,9 @@ class TestMultiPolicyInteraction:
 
 class TestConcurrentEvaluate:
     def test_concurrent_evaluations_are_thread_safe(self, tmp_path):
-        (tmp_path / "policy.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "policy.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: concurrent-policy
             default_verdict: ALLOW
             rules:
@@ -721,7 +855,9 @@ class TestConcurrentEvaluate:
                   - field: tool_name
                     operator: eq
                     value: run_shell
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
         errors: list[str] = []
 
@@ -744,7 +880,9 @@ class TestConcurrentEvaluate:
 class TestFieldResolution:
     def test_non_dict_traversal_raises_key_error(self, tmp_path):
         """Traversing into a non-dict segment returns a safe ALLOW (missing field)."""
-        (tmp_path / "deep.yaml").write_text(textwrap.dedent("""\
+        (tmp_path / "deep.yaml").write_text(
+            textwrap.dedent(
+                """\
             name: deep-field-policy
             default_verdict: ALLOW
             rules:
@@ -754,7 +892,9 @@ class TestFieldResolution:
                   - field: args.nested.value
                     operator: eq
                     value: bad
-        """))
+        """
+            )
+        )
         engine = PolicyEngine(policy_paths=[tmp_path])
         # args.nested is a string, not a dict — traversal should fail safely
         decision = engine.evaluate("tool", {"nested": "flat-string"})
