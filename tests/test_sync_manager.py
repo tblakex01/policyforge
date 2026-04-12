@@ -174,3 +174,91 @@ class TestSyncManagerPaths:
         assert provider.download_calls == [
             ("policies/team-a/policy.yaml", local_policy),
         ]
+
+
+class FailingListProvider(FakeSyncProvider):
+    """Provider whose list_remote raises."""
+
+    def list_remote(self) -> list[dict[str, Any]]:
+        raise ConnectionError("Network unreachable")
+
+
+class FailingDownloadProvider(FakeSyncProvider):
+    """Provider whose download raises."""
+
+    def download(self, remote_key: str, local_path: Path) -> None:
+        raise OSError(f"Download failed: {remote_key}")
+
+
+class FailingUploadProvider(FakeSyncProvider):
+    """Provider whose upload raises."""
+
+    def upload(self, local_path: Path, remote_key: str) -> None:
+        raise OSError(f"Upload failed: {remote_key}")
+
+
+class UnsafeKeyProvider(FakeSyncProvider):
+    """Provider that returns an unsafe key from list_remote."""
+
+    def __init__(self) -> None:
+        super().__init__([{"key": "/etc/passwd", "size": 100}])
+
+
+class TestSyncManagerFailures:
+    def test_pull_handles_list_remote_failure(self, tmp_path):
+        provider = FailingListProvider([])
+        manager = SyncManager(local_dir=tmp_path)
+        manager.add_provider(provider)
+
+        results = manager.pull()
+
+        assert len(results) == 1
+        assert results[0].success is False
+        assert "Network unreachable" in results[0].errors[0]
+
+    def test_pull_handles_download_failure(self, tmp_path):
+        provider = FailingDownloadProvider([{"key": "policies/policy.yaml", "size": 1}])
+        manager = SyncManager(local_dir=tmp_path)
+        manager.add_provider(provider)
+
+        results = manager.pull()
+
+        assert results[0].success is False
+        assert any("Download failed" in e for e in results[0].errors)
+
+    def test_pull_handles_unsafe_remote_key(self, tmp_path):
+        provider = UnsafeKeyProvider()
+        manager = SyncManager(local_dir=tmp_path)
+        manager.add_provider(provider)
+
+        results = manager.pull()
+
+        assert results[0].success is False
+        assert any("Unsafe" in e for e in results[0].errors)
+
+    def test_push_handles_list_remote_failure(self, tmp_path):
+        provider = FailingListProvider([])
+        manager = SyncManager(local_dir=tmp_path)
+        manager.add_provider(provider)
+
+        policy = tmp_path / "policy.yaml"
+        policy.write_text("name: test\n", encoding="utf-8")
+
+        results = manager.push()
+
+        assert len(results) == 1
+        assert results[0].success is False
+        assert "Network unreachable" in results[0].errors[0]
+
+    def test_push_handles_upload_failure(self, tmp_path):
+        provider = FailingUploadProvider([])
+        manager = SyncManager(local_dir=tmp_path)
+        manager.add_provider(provider)
+
+        policy = tmp_path / "policy.yaml"
+        policy.write_text("name: test\n", encoding="utf-8")
+
+        results = manager.push()
+
+        assert results[0].success is False
+        assert any("Upload failed" in e for e in results[0].errors)

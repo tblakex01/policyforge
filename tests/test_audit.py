@@ -234,6 +234,122 @@ class TestAuditLogger:
         assert tampered == 0
 
 
+class TestLogRotation:
+    def test_rotates_when_max_bytes_exceeded(self, tmp_path, monkeypatch):
+        audit = AuditLogger(
+            log_dir=tmp_path,
+            hmac_key="test-key",
+            max_file_bytes=200,  # very small to force rotation
+            chain_hashes=False,
+        )
+
+        # _new_log_path uses second-level timestamps, so all calls within the
+        # same second return the same filename.  Patch it with a counter so
+        # each rotation produces a genuinely new file.
+        counter = [0]
+        original = audit._new_log_path
+
+        def unique_log_path(self_ignored=None):
+            counter[0] += 1
+            base = original()
+            return base.with_name(f"audit_{counter[0]:04d}.jsonl")
+
+        monkeypatch.setattr(audit, "_new_log_path", unique_log_path)
+
+        for i in range(20):
+            audit.log(
+                request_id=f"req-{i:03d}",
+                tool_name="tool",
+                agent_id="agent",
+                args_hash="h" * 64,
+                verdict="ALLOW",
+                message="x" * 50,
+            )
+        log_files = sorted(tmp_path.glob("audit_*.jsonl"))
+        assert len(log_files) > 1, "Expected log rotation to create multiple files"
+
+        # Verify all entries are valid across files
+        total_lines = 0
+        for lf in log_files:
+            for line in lf.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    json.loads(line)  # should parse
+                    total_lines += 1
+        assert total_lines == 20
+
+
+class TestBrokenHashChain:
+    def test_detects_broken_chain_prev(self, tmp_path):
+        """Inserting a valid-HMAC entry with wrong chain_prev should be detected."""
+        audit = AuditLogger(
+            log_dir=tmp_path,
+            hmac_key="chain-key",
+            chain_hashes=True,
+        )
+        # Write two legitimate entries
+        audit.log(request_id="r1", tool_name="t", agent_id="a", args_hash="h", verdict="ALLOW")
+        audit.log(request_id="r2", tool_name="t", agent_id="a", args_hash="h", verdict="ALLOW")
+
+        # Tamper: overwrite chain_prev on the second entry
+        log_file = list(tmp_path.glob("audit_*.jsonl"))[0]
+        lines = log_file.read_text(encoding="utf-8").strip().split("\n")
+        second = json.loads(lines[1])
+        second["chain_prev"] = "0" * 64  # wrong chain_prev
+        # Re-sign with correct HMAC for the tampered chain_prev
+        entry = AuditEntry(
+            timestamp=second["ts"],
+            request_id=second["rid"],
+            tool_name=second["tool"],
+            agent_id=second["agent"],
+            args_hash=second["args_hash"],
+            verdict=second["verdict"],
+            matched_rule=second["rule"],
+            policy_name=second["policy"],
+            message=second["msg"],
+            evaluation_ms=second["ms"],
+            chain_prev="0" * 64,
+        )
+        entry.seal(b"chain-key")
+        second["hmac"] = entry.integrity_hash
+        second["chain_prev"] = "0" * 64
+        lines[1] = json.dumps(second, separators=(",", ":"))
+        log_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        valid, tampered = audit.verify_log()
+        # The HMAC is correct, but the chain is broken
+        assert tampered >= 1
+
+    def test_verify_log_skips_blank_lines(self, tmp_path):
+        audit = AuditLogger(log_dir=tmp_path, hmac_key="key", chain_hashes=False)
+        audit.log(request_id="r1", tool_name="t", agent_id="a", args_hash="h", verdict="ALLOW")
+
+        log_file = list(tmp_path.glob("audit_*.jsonl"))[0]
+        content = log_file.read_text(encoding="utf-8")
+        log_file.write_text("\n\n" + content + "\n\n", encoding="utf-8")
+
+        valid, tampered = audit.verify_log()
+        assert valid == 1
+        assert tampered == 0
+
+
+class TestHmacKeyPrecedence:
+    def test_constructor_key_overrides_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("POLICYFORGE_HMAC_KEY", "env-key")
+        audit = AuditLogger(log_dir=tmp_path, hmac_key="constructor-key")
+        audit.log(request_id="r", tool_name="t", agent_id="a", args_hash="h", verdict="ALLOW")
+
+        # Verify with constructor key should succeed
+        valid, tampered = audit.verify_log()
+        assert valid == 1
+        assert tampered == 0
+
+        # Verify with env key should fail — proving constructor key was used
+        audit_env = AuditLogger(log_dir=tmp_path / "other", hmac_key="env-key")
+        audit_env._current_file = audit._current_file
+        valid_env, tampered_env = audit_env.verify_log()
+        assert tampered_env == 1
+
+
 class TestAuditRequiresKey:
     def test_no_key_raises(self, tmp_path, monkeypatch):
         monkeypatch.delenv("POLICYFORGE_HMAC_KEY", raising=False)
