@@ -143,8 +143,14 @@ class Decision:
 
     @staticmethod
     def _escape_markdown_inline(value: str) -> str:
-        """Escape Markdown control characters for inline code-like fields."""
-        return " ".join(value.splitlines()).replace("\\", "\\\\").replace("`", "\\`")
+        """Sanitize a value for embedding inside an inline code span.
+
+        Backticks cannot be neutralized with backslash escapes inside a
+        code span (CommonMark: backslash escapes don't apply there), so
+        any embedded ``\u0060`` would close the span and let following
+        characters render as markup. Replace them with ``'`` instead.
+        """
+        return " ".join(value.splitlines()).replace("\\", "\\\\").replace("`", "'")
 
     @staticmethod
     def _escape_markdown_text(value: str) -> str:

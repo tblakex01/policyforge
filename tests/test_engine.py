@@ -622,9 +622,13 @@ class TestShareReceipt:
         decision = engine.evaluate("run`tool", {"command": "rm -rf /tmp/demo"})
         receipt = engine.render_share_receipt(decision)
 
+        # Inline fields: backticks can't be backslash-escaped inside a
+        # CommonMark code span, so they're replaced with ``'``.
         assert "`run`tool`" not in receipt
-        assert "run\\`tool" in receipt
-        assert "prod\\`policy" in receipt
+        assert "run'tool" in receipt
+        assert "prod'policy" in receipt
+        # Free-text Reason section still uses backslash escaping — that
+        # works outside of code spans.
         assert "Do not paste \\`raw\\` values" in receipt
 
 

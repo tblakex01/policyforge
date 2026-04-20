@@ -183,3 +183,40 @@ class TestDecisionShareMarkdown:
         assert "Policy: `unknown`" in receipt  # policy_name default
         assert "Agent: `unknown`" in receipt  # agent_id default
         assert "No policy message provided." in receipt  # message default
+
+    def test_backticks_cannot_break_out_of_inline_code_span(self):
+        # Regression: backslash escapes don't work inside CommonMark code
+        # spans, so a raw backtick in any inline field would terminate the
+        # span and let following characters render as markup (e.g. images
+        # or links). The sanitizer must strip backticks from inline values.
+        d = Decision(
+            verdict=Verdict.DENY,
+            policy_name="p`ol",
+            matched_rule="evil`![x](https://evil.example/t.png)`tail",
+            tool_name="to`ol",
+            agent_id="ag`ent",
+            message="ok",
+        )
+        receipt = d.to_share_markdown()
+
+        # No raw backticks may survive inside the inline-escaped values.
+        assert "evil`" not in receipt
+        assert "`tail" not in receipt
+        assert "p`ol" not in receipt
+        assert "to`ol" not in receipt
+        assert "ag`ent" not in receipt
+        # Sanity: replacement character is present in the rendered receipt.
+        assert "'ol" in receipt
+        assert "evil'" in receipt
+        # Every inline-field line must have exactly one opening+closing
+        # backtick pair — proves the injected content stays inside the
+        # code span rather than terminating it early.
+        for line in receipt.splitlines():
+            if line.startswith("- Rule:"):
+                assert line.count("`") == 2, line
+            if line.startswith("- Tool:"):
+                assert line.count("`") == 2, line
+            if line.startswith("- Policy:"):
+                assert line.count("`") == 2, line
+            if line.startswith("- Agent:"):
+                assert line.count("`") == 2, line
