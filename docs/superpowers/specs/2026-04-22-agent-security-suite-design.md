@@ -76,7 +76,7 @@ Two event kinds added to `AuditEntry.event_type`: `tool_approved`, `fingerprint_
 
 ### 4.4 Ledger
 
-`policyforge/trust/ledger.py` — JSON-lines file, default `~/.policyforge/approvals.jsonl` (Windows: `%APPDATA%\PolicyForge\approvals.jsonl`). Uses `AuditLogger`'s existing HMAC + chain-prev fields so operators can verify the ledger with the same tooling. A ledger is a specialized audit log, not a parallel mechanism.
+`policyforge/trust/ledger.py` — JSON-lines file at a **project-local** path: `./.policyforge/approvals.jsonl` by default (overridable via `tool_trust.ledger_path`). The project-local convention keeps the ledger versioned and deploy-visible; target deployment is Linux. Uses `AuditLogger`'s existing HMAC + chain-prev fields so operators can verify the ledger with the same tooling. A ledger is a specialized audit log, not a parallel mechanism.
 
 ### 4.5 YAML Shape
 
@@ -85,7 +85,7 @@ New top-level block at the policy-set level (not per-rule):
 ```yaml
 tool_trust:
   mode: enforce        # enforce | warn | disabled
-  ledger_path: ~/.policyforge/approvals.jsonl
+  ledger_path: .policyforge/approvals.jsonl
   on_mismatch: DENY
   on_unknown: DENY     # unknown tool not in ledger
   detect_shadowing:
@@ -355,13 +355,13 @@ Per the loader's current convention, the new blocks live alongside `policies:` i
 
 ---
 
-## 9. Open Questions
+## 9. Resolved Decisions
 
-1. **Ledger location on Windows.** `%APPDATA%\PolicyForge\` is the proposal. Confirm that aligns with operator expectations or prefer a project-local `.policyforge/` convention.
-2. **Strict default for provenance.** Should `provenance.default` be `user` (permissive, preserves legacy) or `unknown` (strict, breaks legacy policies once a `provenance:` block appears)? Proposal: `user` when no `provenance:` block exists, `unknown` when the block is present but a field is unlabeled.
-3. **`auto_approve` in production.** Dangerous or useful? Proposal: ship it but default to `false` and document as dev-only.
-4. **Trifecta leg vocabulary.** The Willison framing is a useful default; should we ship it as the sole preset, or allow operators to define arbitrary N-leg patterns (e.g. a 4-leg "privileged-write trifecta")? Proposal: allow arbitrary legs; ship the 3-leg preset as a referenced example.
-5. **Decorator provenance with async.** `PolicyGateWrapper` supports async today; the new `arg_provenance` callable may or may not be async. Proposal: support both via `inspect.iscoroutinefunction` branching, consistent with existing patterns.
+1. **Ledger location.** Project-local `./.policyforge/approvals.jsonl`. Target deployment is Linux; the convention keeps the ledger versioned and visible alongside the project. Overridable via `tool_trust.ledger_path`.
+2. **Provenance default.** `user` when no `provenance:` block exists (preserves legacy behavior). `unknown` when the block is present but a specific field is unlabeled (strict by opt-in).
+3. **`auto_approve`.** Ships enabled in the code, defaults to `false`, documented as dev-only in the YAML example and README.
+4. **Trifecta leg vocabulary.** Arbitrary legs supported via `trifecta_guard.legs`; the 3-leg Willison preset ships as a referenced example, not hardcoded.
+5. **Async decorator provenance.** `arg_provenance` callables may be sync or async; the wrapper branches via `inspect.iscoroutinefunction`, consistent with existing patterns in `decorators.py`.
 
 ---
 
