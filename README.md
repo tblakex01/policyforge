@@ -225,6 +225,61 @@ sharing without adding a separate analytics dependency.
 
 ---
 
+## Threat Model
+
+PolicyForge gates agent tool calls against three attack classes, each addressed by a dedicated subsystem. This release ships the first.
+
+### Tool Fingerprint Pinning (this release)
+
+Defends against **MCP tool poisoning**, **rug-pull** (tool definitions changing after approval), **typosquatting**, and **cross-server name shadowing**.
+
+Every call's `(server_id, name, schema_hash, description_hash)` is compared against a project-local, HMAC-chained approvals ledger at `.policyforge/approvals.jsonl`. Drift or Unicode shadowing (Cyrillic/Greek homoglyphs, NFKC collisions) short-circuits evaluation with `DENY` before any rule runs. The approvals ledger itself is tamper-evident: writer-open verifies the full chain and refuses to continue if any entry has been altered.
+
+```yaml
+tool_trust:
+  mode: enforce
+  ledger_path: .policyforge/approvals.jsonl
+  on_mismatch: DENY
+  on_unknown: DENY
+  detect_shadowing:
+    nfkc: true
+    confusables: true
+```
+
+```python
+from policyforge import PolicyEngine, TrustConfig, TrustManager, TrustMode
+
+trust = TrustManager(
+    TrustConfig(mode=TrustMode.ENFORCE),
+    hmac_key="your-secret",
+)
+engine = PolicyEngine(policy_paths=["policies/"], trust_manager=trust)
+
+decision = engine.evaluate(
+    tool_name="create_issue",
+    args={"title": "..."},
+    context={
+        "tool": {
+            "server_id": "mcp://github",
+            "schema_hash": "<sha256 of the tool's input schema>",
+            "description_hash": "<sha256 of the tool's description>",
+        }
+    },
+)
+```
+
+See `policyforge/policies/tool_trust_example.yaml` for a complete annotated configuration.
+
+### Provenance-Tagged Args (next release)
+
+Will defend indirect prompt injection and confused-deputy attacks by letting rules deny based on the *origin* of an argument (user, web, rag, tool output) rather than its content.
+
+### Lethal-Trifecta Detector (future)
+
+Will defend exfiltration chains (read private data → ingest untrusted content → post externally) by maintaining per-session capability state and denying the call that would close the trifecta.
+
+---
+
 ## Cloud Sync
 
 Sync policies across your multi-cloud environment. The sync layer is strictly for policy *distribution* — security decisions are always made locally. Remote subdirectories are preserved locally, and unchanged-file skips use provider-specific checksums when the backend exposes one.

@@ -20,6 +20,8 @@ from policyforge.models import (
     PolicyRule,
     Verdict,
 )
+from policyforge.trust.manager import TrustManager
+from policyforge.trust.models import TrustVerdict
 
 logger = logging.getLogger(__name__)
 
@@ -123,11 +125,13 @@ class PolicyEngine:
         policy_paths: list[str | Path] | None = None,
         audit_logger: AuditLogger | None = None,
         agent_id: str = "default",
+        trust_manager: TrustManager | None = None,
     ) -> None:
         self._loader = PolicyLoader()
         self._policies: list[Policy] = []
         self._audit = audit_logger
         self._agent_id = agent_id
+        self._trust = trust_manager
 
         if policy_paths:
             for p in policy_paths:
@@ -145,6 +149,7 @@ class PolicyEngine:
             self._policies.extend(self._loader.load_directory(path))
         else:
             self._policies.extend(self._loader.load_file(path))
+        self._warn_if_trust_config_orphaned()
 
     def reload(self, policy_paths: list[str | Path]) -> None:
         """Replace all policies with a fresh load from the given paths."""
@@ -185,7 +190,11 @@ class PolicyEngine:
         }
 
         start = time.perf_counter()
-        decision = self._run_evaluation(eval_context)
+        trust_decision = self._preflight_trust(tool_name, eval_context)
+        if trust_decision is not None:
+            decision = trust_decision
+        else:
+            decision = self._run_evaluation(eval_context)
         elapsed_ms = (time.perf_counter() - start) * 1000
         decision = Decision(
             verdict=decision.verdict,
@@ -235,6 +244,53 @@ class PolicyEngine:
 
         return receipt
 
+    def _warn_if_trust_config_orphaned(self) -> None:
+        """Warn once when YAML configures tool_trust but no TrustManager was wired.
+
+        This surfaces a silent-no-op foot-gun: an operator sets
+        ``tool_trust.mode: enforce`` in YAML expecting the engine to enforce,
+        but forgot to construct a TrustManager with ``PolicyEngine(trust_manager=...)``.
+        """
+        from policyforge.trust.models import TrustMode
+
+        trust_cfg = getattr(self._loader, "trust_config", None)
+        if trust_cfg is None:
+            return
+        if trust_cfg.mode == TrustMode.DISABLED:
+            return
+        if self._trust is not None:
+            return
+        if getattr(self, "_trust_warning_emitted", False):
+            return
+        logger.warning(
+            "tool_trust.mode=%s configured in YAML but no TrustManager was "
+            "passed to PolicyEngine(trust_manager=...). Trust checks will NOT run.",
+            trust_cfg.mode.value,
+        )
+        self._trust_warning_emitted = True
+
+    def _preflight_trust(self, tool_name: str, context: dict[str, Any]) -> Decision | None:
+        """Run the trust manager before rule evaluation.
+
+        Returns a DENY/LOG_ONLY decision to short-circuit the rule loop,
+        or None to continue with regular evaluation.
+        """
+        if self._trust is None:
+            return None
+        result = self._trust.check(
+            tool_name=tool_name,
+            tool_meta=context.get("tool"),
+        )
+        if result.verdict == TrustVerdict.ALLOW:
+            return None
+        verdict = Verdict.DENY if result.verdict == TrustVerdict.DENY else Verdict.LOG_ONLY
+        return Decision(
+            verdict=verdict,
+            matched_rule=result.reason,
+            policy_name="tool_trust",
+            message=result.message,
+        )
+
     def _run_evaluation(self, context: dict[str, Any]) -> Decision:
         """Inner evaluation loop — separated for clean error handling."""
         active_policies = [p for p in self._policies if p.enabled]
@@ -271,7 +327,7 @@ class PolicyEngine:
             if (
                 decision.verdict == Verdict.ALLOW
                 and allow_decision is None
-                and "fail-open" in decision.message.lower()
+                and ("fail-open" in decision.message.lower() or decision.matched_rule)
             ):
                 allow_decision = decision
 
