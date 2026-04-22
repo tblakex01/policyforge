@@ -1,5 +1,6 @@
 """Tool fingerprint pinning and trust management."""
 
+from policyforge.trust.manager import TrustManager
 from policyforge.trust.models import (
     ToolFingerprint,
     TrustConfig,
@@ -12,6 +13,7 @@ from policyforge.trust.models import (
 __all__ = [
     "ToolFingerprint",
     "TrustConfig",
+    "TrustManager",
     "TrustMode",
     "TrustResult",
     "TrustVerdict",
