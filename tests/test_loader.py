@@ -478,3 +478,18 @@ tool_trust:
         assert loader.trust_config is not None
         assert loader.trust_config.mode == TrustMode.ENFORCE
         assert any("Overwriting tool_trust" in rec.message for rec in caplog.records)
+
+    def test_shipped_example_yaml_loads(self):
+        """The example YAML bundled with the package must be valid."""
+        import policyforge
+
+        pkg_dir = Path(policyforge.__file__).parent
+        example = pkg_dir / "policies" / "tool_trust_example.yaml"
+        assert example.exists(), f"example YAML missing at {example}"
+
+        loader = PolicyLoader()
+        policies = loader.load_file(example)
+        assert len(policies) == 1
+        assert policies[0].name == "example"
+        assert loader.trust_config is not None
+        assert loader.trust_config.mode == TrustMode.ENFORCE

@@ -1,0 +1,31 @@
+# Example: enable tool fingerprint pinning.
+#
+# With this block in place, PolicyEngine will refuse tool calls whose
+# (server_id, name, schema_hash, description_hash) drifts from an entry
+# in the approvals ledger, or whose name visually shadows an approved
+# one via Unicode tricks (Cyrillic/Greek lookalikes, NFKC collisions).
+#
+# auto_approve is dev-only. In production, pin fingerprints deliberately
+# via tooling and leave auto_approve: false.
+
+tool_trust:
+  mode: enforce                     # enforce | warn | disabled
+  ledger_path: .policyforge/approvals.jsonl
+  on_mismatch: DENY
+  on_unknown: DENY
+  auto_approve: false               # DEV ONLY — silently pins any unseen tool
+  detect_shadowing:
+    nfkc: true
+    confusables: true
+
+policies:
+  - name: example
+    description: Trivial pass-through policy that demonstrates the trust block.
+    default_verdict: ALLOW
+    rules:
+      - name: allow_all
+        conditions:
+          - field: tool_name
+            operator: regex
+            value: ".*"
+        verdict: ALLOW

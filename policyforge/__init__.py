@@ -12,6 +12,14 @@ from policyforge.models import (
     PolicyRule,
     Verdict,
 )
+from policyforge.trust import (
+    ToolFingerprint,
+    TrustConfig,
+    TrustManager,
+    TrustMode,
+    TrustResult,
+    TrustVerdict,
+)
 
 __version__ = "0.1.0"
 
@@ -27,4 +35,10 @@ __all__ = [
     "AuditLogger",
     "policy_gate",
     "PolicyGateWrapper",
+    "ToolFingerprint",
+    "TrustConfig",
+    "TrustManager",
+    "TrustMode",
+    "TrustResult",
+    "TrustVerdict",
 ]
