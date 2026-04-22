@@ -29,8 +29,8 @@ class TestToolFingerprint:
             fp.name = "other"  # type: ignore[misc]
 
     def test_equality_on_all_fields(self):
-        a = ToolFingerprint("s", "n", "x" * 64, "y" * 64, 1.0, "op")
-        b = ToolFingerprint("s", "n", "x" * 64, "y" * 64, 1.0, "op")
+        a = ToolFingerprint("s", "n", "e" * 64, "f" * 64, 1.0, "op")
+        b = ToolFingerprint("s", "n", "e" * 64, "f" * 64, 1.0, "op")
         assert a == b
 
 

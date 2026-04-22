@@ -42,6 +42,20 @@ class ToolFingerprint:
     first_seen: float
     approved_by: str
 
+    def __post_init__(self) -> None:
+        for field_name in ("schema_hash", "description_hash"):
+            value = getattr(self, field_name)
+            if len(value) != 64:
+                raise ValueError(
+                    f"ToolFingerprint.{field_name} must be 64 hex chars, got {len(value)}"
+                )
+            try:
+                int(value, 16)
+            except ValueError as exc:
+                raise ValueError(
+                    f"ToolFingerprint.{field_name} must be hex, got {value!r}"
+                ) from exc
+
 
 @dataclass(frozen=True)
 class TrustConfig:

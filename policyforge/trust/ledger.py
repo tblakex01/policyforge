@@ -7,10 +7,10 @@ import hmac as _hmac
 import json
 import os
 import threading
-import unicodedata
 from pathlib import Path
 from typing import Any
 
+from policyforge.trust._normalize import nfkc
 from policyforge.trust.models import ToolFingerprint
 
 _ENV_HMAC_KEY = "POLICYFORGE_HMAC_KEY"
@@ -28,10 +28,6 @@ def _entry_payload(record: dict[str, Any]) -> str:
 
 def _sign(payload: str, key: bytes) -> str:
     return _hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
-
-
-def _nfkc(name: str) -> str:
-    return unicodedata.normalize("NFKC", name)
 
 
 class LedgerWriter:
@@ -139,7 +135,7 @@ class LedgerReader:
                     first_seen=float(record["first_seen"]),
                     approved_by=record["approved_by"],
                 )
-                out[(fp.server_id, _nfkc(fp.name))] = fp
+                out[(fp.server_id, nfkc(fp.name))] = fp
                 prev = stored
 
         return out

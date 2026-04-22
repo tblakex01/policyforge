@@ -43,8 +43,8 @@ class TestLedgerWriter:
         assert record["chain_prev"] == ""
 
     def test_second_entry_chains_to_first(self, writer, ledger_path):
-        fp1 = ToolFingerprint("s", "a", "x" * 64, "y" * 64, 1.0, "op")
-        fp2 = ToolFingerprint("s", "b", "x" * 64, "y" * 64, 2.0, "op")
+        fp1 = ToolFingerprint("s", "a", "e" * 64, "f" * 64, 1.0, "op")
+        fp2 = ToolFingerprint("s", "b", "e" * 64, "f" * 64, 2.0, "op")
         writer.append(fp1)
         writer.append(fp2)
         lines = ledger_path.read_text(encoding="utf-8").strip().split("\n")
@@ -66,16 +66,16 @@ class TestLedgerWriter:
         monkeypatch.setenv("POLICYFORGE_HMAC_KEY", "from-env")
         writer = LedgerWriter(path=ledger_path)
         # Should not raise
-        writer.append(ToolFingerprint("s", "n", "x" * 64, "y" * 64, 1.0, "op"))
+        writer.append(ToolFingerprint("s", "n", "e" * 64, "f" * 64, 1.0, "op"))
 
     def test_reopening_continues_chain(self, ledger_path):
         """A second LedgerWriter on an existing file must chain to the last entry."""
         w1 = LedgerWriter(path=ledger_path, hmac_key="k")
-        fp1 = ToolFingerprint("s", "a", "x" * 64, "y" * 64, 1.0, "op")
+        fp1 = ToolFingerprint("s", "a", "e" * 64, "f" * 64, 1.0, "op")
         w1.append(fp1)
 
         w2 = LedgerWriter(path=ledger_path, hmac_key="k")
-        fp2 = ToolFingerprint("s", "b", "x" * 64, "y" * 64, 2.0, "op")
+        fp2 = ToolFingerprint("s", "b", "e" * 64, "f" * 64, 2.0, "op")
         w2.append(fp2)
 
         # Second entry's chain_prev should point at the first entry's hmac.
@@ -114,7 +114,7 @@ class TestLedgerReader:
         assert loaded[(fp.server_id, "create_issue")] == fp
 
     def test_normalizes_key_via_nfkc(self, writer, ledger_path):
-        fp = ToolFingerprint("mcp://x", "fil\u00e9", "x" * 64, "y" * 64, 1.0, "op")
+        fp = ToolFingerprint("mcp://x", "fil\u00e9", "e" * 64, "f" * 64, 1.0, "op")
         writer.append(fp)
         reader = LedgerReader(path=ledger_path, hmac_key="test-ledger-key")
         loaded = reader.load()
@@ -142,8 +142,8 @@ class TestLedgerReader:
             reader.load()
 
     def test_broken_chain_raises(self, writer, ledger_path):
-        fp1 = ToolFingerprint("s", "a", "x" * 64, "y" * 64, 1.0, "op")
-        fp2 = ToolFingerprint("s", "b", "x" * 64, "y" * 64, 2.0, "op")
+        fp1 = ToolFingerprint("s", "a", "e" * 64, "f" * 64, 1.0, "op")
+        fp2 = ToolFingerprint("s", "b", "e" * 64, "f" * 64, 2.0, "op")
         writer.append(fp1)
         writer.append(fp2)
         # Corrupt chain_prev on second record
@@ -159,7 +159,7 @@ class TestLedgerReader:
     def test_middle_entry_tamper_detected(self, writer, ledger_path):
         """Tampering a non-terminal entry must still fail the reader."""
         for i, name in enumerate(["a", "b", "c"]):
-            writer.append(ToolFingerprint("s", name, "x" * 64, "y" * 64, float(i), "op"))
+            writer.append(ToolFingerprint("s", name, "e" * 64, "f" * 64, float(i), "op"))
         lines = ledger_path.read_text(encoding="utf-8").strip().split("\n")
         # Corrupt the middle entry's schema_hash (field that's part of the HMAC payload).
         middle = json.loads(lines[1])

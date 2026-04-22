@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import time
-import unicodedata
 from collections.abc import Callable
 from typing import Any
 
+from policyforge.trust._normalize import nfkc
 from policyforge.trust.ledger import LedgerReader, LedgerWriter
 from policyforge.trust.models import (
     ToolFingerprint,
@@ -15,10 +15,6 @@ from policyforge.trust.models import (
     TrustResult,
 )
 from policyforge.trust.shadowing import canonicalize
-
-
-def _nfkc(name: str) -> str:
-    return unicodedata.normalize("NFKC", name)
 
 
 class TrustManager:
@@ -40,6 +36,22 @@ class TrustManager:
         approved_by: str = "auto",
         now: Callable[[], float] = time.time,
     ) -> None:
+        """Initialize the trust manager.
+
+        Args:
+            config: Parsed ``tool_trust`` YAML block.
+            hmac_key: Secret for the approvals ledger's HMAC. Falls back to the
+                ``POLICYFORGE_HMAC_KEY`` environment variable. Required when
+                ``config.mode`` is not ``DISABLED``.
+            approved_by: Identifier recorded in the ledger for auto-approved entries
+                (``auto_approve=True``). Ignored otherwise.
+            now: Injectable clock for tests.
+
+        Note:
+            The approvals ledger is snapshotted into memory at construction.
+            Out-of-band appends (e.g. operator-run approval CLI) are NOT observed
+            by a running TrustManager — re-instantiate to refresh.
+        """
         self._config = config
         self._approved_by = approved_by
         self._now = now
@@ -74,7 +86,8 @@ class TrustManager:
         server_id = tool_meta.get("server_id", "")
         schema_hash = tool_meta.get("schema_hash", "")
         description_hash = tool_meta.get("description_hash", "")
-        key = (server_id, _nfkc(tool_name))
+        nfkc_name = nfkc(tool_name)
+        key = (server_id, nfkc_name)
 
         # 1. Shadowing check — compare against every approved name for this server.
         if self._config.detect_confusables or self._config.detect_nfkc:
@@ -82,7 +95,7 @@ class TrustManager:
             for s_id, stored_name in self._approved:
                 if s_id != server_id:
                     continue
-                if stored_name == _nfkc(tool_name):
+                if stored_name == nfkc_name:
                     continue
                 if canonicalize(stored_name) == incoming_canon:
                     return self._mismatch(
@@ -96,14 +109,15 @@ class TrustManager:
             if self._config.auto_approve:
                 fp = ToolFingerprint(
                     server_id=server_id,
-                    name=_nfkc(tool_name),
+                    name=nfkc_name,
                     schema_hash=schema_hash,
                     description_hash=description_hash,
                     first_seen=self._now(),
                     approved_by=self._approved_by,
                 )
-                if self._writer is not None:
-                    self._writer.append(fp)
+                # mode != DISABLED path: writer is guaranteed non-None (see __init__).
+                assert self._writer is not None
+                self._writer.append(fp)
                 self._approved[key] = fp
                 return TrustResult.ok()
             verdict = self._config.on_unknown
