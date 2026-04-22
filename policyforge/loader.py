@@ -196,6 +196,8 @@ class PolicyLoader:
     """Load and validate policies from YAML files or directories."""
 
     def __init__(self) -> None:
+        # `None` = no tool_trust block was present in any loaded YAML.
+        # `TrustConfig(mode=DISABLED)` = explicitly configured but disabled.
         self.trust_config: TrustConfig | None = None
 
     def load_file(self, path: str | Path) -> list[Policy]:
@@ -219,7 +221,16 @@ class PolicyLoader:
             if doc is None:
                 continue
             if isinstance(doc, dict) and "tool_trust" in doc:
+                if self.trust_config is not None:
+                    logger.warning(
+                        "Overwriting tool_trust config from a later document in %s", path
+                    )
                 self.trust_config = load_trust_config(doc.get("tool_trust"))
+                # Peel off tool_trust and see if the remaining dict is a policy.
+                remainder = {k: v for k, v in doc.items() if k != "tool_trust"}
+                if not remainder:
+                    continue
+                doc = remainder
             if isinstance(doc, dict) and "policies" in doc:
                 if not isinstance(doc["policies"], list):
                     raise PolicyValidationError(
@@ -228,7 +239,7 @@ class PolicyLoader:
                 docs.extend(doc["policies"])
             elif isinstance(doc, list):
                 docs.extend(doc)
-            elif isinstance(doc, dict) and "tool_trust" not in doc or not isinstance(doc, dict):
+            else:
                 docs.append(doc)
 
         policies: list[Policy] = []
@@ -245,7 +256,12 @@ class PolicyLoader:
         return policies
 
     def load_directory(self, path: str | Path) -> list[Policy]:
-        """Recursively load all .yaml/.yml files from a directory."""
+        """Recursively load all .yaml/.yml files from a directory.
+
+        Files are loaded in sorted order. If multiple files declare a
+        ``tool_trust:`` block, the last file (alphabetical order) wins;
+        a ``logger.warning`` is emitted when overwriting.
+        """
         path = Path(path)
         if not path.is_dir():
             raise NotADirectoryError(f"Policy directory not found: {path}")
