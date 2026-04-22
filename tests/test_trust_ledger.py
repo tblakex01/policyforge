@@ -68,6 +68,33 @@ class TestLedgerWriter:
         # Should not raise
         writer.append(ToolFingerprint("s", "n", "x" * 64, "y" * 64, 1.0, "op"))
 
+    def test_reopening_continues_chain(self, ledger_path):
+        """A second LedgerWriter on an existing file must chain to the last entry."""
+        w1 = LedgerWriter(path=ledger_path, hmac_key="k")
+        fp1 = ToolFingerprint("s", "a", "x" * 64, "y" * 64, 1.0, "op")
+        w1.append(fp1)
+
+        w2 = LedgerWriter(path=ledger_path, hmac_key="k")
+        fp2 = ToolFingerprint("s", "b", "x" * 64, "y" * 64, 2.0, "op")
+        w2.append(fp2)
+
+        # Second entry's chain_prev should point at the first entry's hmac.
+        lines = ledger_path.read_text(encoding="utf-8").strip().split("\n")
+        first = json.loads(lines[0])
+        second = json.loads(lines[1])
+        assert second["chain_prev"] == first["hmac"]
+
+    def test_writer_refuses_to_open_tampered_ledger(self, ledger_path):
+        """Tamper in the existing file must fail the writer's init, not be silently accepted."""
+        LedgerWriter(path=ledger_path, hmac_key="k").append(
+            ToolFingerprint("s", "n", "a" * 64, "b" * 64, 1.0, "op")
+        )
+        # Corrupt the schema_hash.
+        text = ledger_path.read_text(encoding="utf-8")
+        ledger_path.write_text(text.replace("a" * 64, "z" * 64), encoding="utf-8")
+        with pytest.raises(ValueError, match="tamper"):
+            LedgerWriter(path=ledger_path, hmac_key="k")
+
 
 class TestLedgerReader:
     def test_empty_file_returns_empty_map(self, ledger_path):
@@ -127,4 +154,19 @@ class TestLedgerReader:
         ledger_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         reader = LedgerReader(path=ledger_path, hmac_key="test-ledger-key")
         with pytest.raises(ValueError, match="chain"):
+            reader.load()
+
+    def test_middle_entry_tamper_detected(self, writer, ledger_path):
+        """Tampering a non-terminal entry must still fail the reader."""
+        for i, name in enumerate(["a", "b", "c"]):
+            writer.append(ToolFingerprint("s", name, "x" * 64, "y" * 64, float(i), "op"))
+        lines = ledger_path.read_text(encoding="utf-8").strip().split("\n")
+        # Corrupt the middle entry's schema_hash (field that's part of the HMAC payload).
+        middle = json.loads(lines[1])
+        middle["schema_hash"] = "z" * 64
+        lines[1] = json.dumps(middle, separators=(",", ":"))
+        ledger_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        reader = LedgerReader(path=ledger_path, hmac_key="test-ledger-key")
+        with pytest.raises(ValueError):
             reader.load()

@@ -17,12 +17,13 @@ _ENV_HMAC_KEY = "POLICYFORGE_HMAC_KEY"
 
 
 def _entry_payload(record: dict[str, Any]) -> str:
-    """Canonical payload over which the HMAC is computed."""
-    return (
-        f"{record['server_id']}|{record['name']}|{record['schema_hash']}|"
-        f"{record['description_hash']}|{record['first_seen']}|{record['approved_by']}|"
-        f"{record['chain_prev']}"
-    )
+    """Canonical JSON payload over which the HMAC is computed.
+
+    Uses sorted keys + compact separators for a self-delimiting encoding
+    that cannot be ambiguously re-parsed if an attacker stuffs the
+    separator into a field value.
+    """
+    return json.dumps(record, sort_keys=True, separators=(",", ":"))
 
 
 def _sign(payload: str, key: bytes) -> str:
@@ -34,7 +35,15 @@ def _nfkc(name: str) -> str:
 
 
 class LedgerWriter:
-    """Append-only writer for the approvals ledger."""
+    """Append-only writer for the approvals ledger.
+
+    Thread-safe within a single process via an internal lock. The writer
+    does NOT guard against concurrent writes from multiple processes —
+    running two LedgerWriters against the same path will race on chain
+    recovery and produce an irrecoverably broken chain. Single-process
+    ownership is assumed; deploy accordingly (or layer a file lock
+    outside this class).
+    """
 
     def __init__(self, path: Path, hmac_key: str | bytes | None = None) -> None:
         raw = hmac_key or os.environ.get(_ENV_HMAC_KEY)
@@ -46,8 +55,17 @@ class LedgerWriter:
         self._last_hash = self._recover_last_hash()
 
     def _recover_last_hash(self) -> str:
+        """Verify and recover the last HMAC from an existing ledger.
+
+        Uses LedgerReader.load() so any tamper or chain break surfaces
+        immediately; silently chaining to a bogus hash would permanently
+        break the file.
+        """
         if not self._path.exists():
             return ""
+        reader = LedgerReader(path=self._path, hmac_key=self._key)
+        reader.load()  # raises ValueError on tamper/chain break
+        # Reader's verify also walks the file — grab the terminal hmac.
         last = ""
         with self._path.open(encoding="utf-8") as fh:
             for line in fh:
@@ -71,7 +89,7 @@ class LedgerWriter:
             record["hmac"] = _sign(_entry_payload(record), self._key)
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with self._path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(record, separators=(",", ":"), default=str) + "\n")
+                fh.write(json.dumps(record, separators=(",", ":")) + "\n")
             self._last_hash = record["hmac"]
 
 
