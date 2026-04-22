@@ -200,6 +200,26 @@ class TestTrustManagerMissingMeta:
         assert result.reason == "tool_meta_missing"
 
 
+class TestTrustManagerAutoApproveInvalid:
+    def test_auto_approve_with_invalid_meta_denies_not_crashes(self, ledger_path):
+        cfg = TrustConfig(
+            mode=TrustMode.ENFORCE,
+            ledger_path=ledger_path,
+            auto_approve=True,
+        )
+        tm = TrustManager(cfg, hmac_key="k")
+        result = tm.check(
+            tool_name="new_tool",
+            tool_meta={
+                "server_id": "mcp://x",
+                "schema_hash": "",  # invalid — will raise in ToolFingerprint
+                "description_hash": "",
+            },
+        )
+        assert result.verdict == TrustVerdict.DENY
+        assert result.reason == "tool_meta_invalid"
+
+
 class TestTrustManagerShadowFlags:
     def test_both_flags_false_disables_shadow_check(self, ledger_path):
         _pin(ledger_path, name="send_email")

@@ -176,6 +176,84 @@ class TestTrustPreflight:
         assert decision.matched_rule == "fingerprint_drift"
 
 
+class TestTrustConfigOrphanWarning:
+    def test_warns_when_yaml_trust_but_no_manager(self, tmp_path, caplog):
+        import logging
+
+        policy_yaml = tmp_path / "p.yaml"
+        policy_yaml.write_text(
+            """
+tool_trust:
+  mode: enforce
+policies:
+  - name: demo
+    rules:
+      - name: allow_all
+        conditions:
+          - field: tool_name
+            operator: eq
+            value: anything
+        verdict: ALLOW
+""",
+            encoding="utf-8",
+        )
+        with caplog.at_level(logging.WARNING, logger="policyforge.engine"):
+            PolicyEngine(policy_paths=[policy_yaml])
+        assert any("no TrustManager was passed" in rec.message for rec in caplog.records)
+
+    def test_no_warning_when_trust_manager_present(self, tmp_path, ledger_path, caplog):
+        import logging
+
+        policy_yaml = tmp_path / "p.yaml"
+        policy_yaml.write_text(
+            """
+tool_trust:
+  mode: enforce
+policies:
+  - name: demo
+    rules:
+      - name: allow_all
+        conditions:
+          - field: tool_name
+            operator: eq
+            value: anything
+        verdict: ALLOW
+""",
+            encoding="utf-8",
+        )
+        tm = TrustManager(
+            TrustConfig(mode=TrustMode.ENFORCE, ledger_path=ledger_path),
+            hmac_key="k",
+        )
+        with caplog.at_level(logging.WARNING, logger="policyforge.engine"):
+            PolicyEngine(policy_paths=[policy_yaml], trust_manager=tm)
+        assert not any("no TrustManager was passed" in rec.message for rec in caplog.records)
+
+    def test_no_warning_when_trust_disabled_in_yaml(self, tmp_path, caplog):
+        import logging
+
+        policy_yaml = tmp_path / "p.yaml"
+        policy_yaml.write_text(
+            """
+tool_trust:
+  mode: disabled
+policies:
+  - name: demo
+    rules:
+      - name: allow_all
+        conditions:
+          - field: tool_name
+            operator: eq
+            value: anything
+        verdict: ALLOW
+""",
+            encoding="utf-8",
+        )
+        with caplog.at_level(logging.WARNING, logger="policyforge.engine"):
+            PolicyEngine(policy_paths=[policy_yaml])
+        assert not any("no TrustManager was passed" in rec.message for rec in caplog.records)
+
+
 class TestTrustAudit:
     def test_trust_denial_emits_audit_event(self, policy_file, ledger_path, tmp_path, monkeypatch):
         monkeypatch.setenv("POLICYFORGE_HMAC_KEY", "k")

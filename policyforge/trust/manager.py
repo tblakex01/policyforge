@@ -73,14 +73,32 @@ class TrustManager:
         tool_name: str,
         tool_meta: dict[str, Any] | None,
     ) -> TrustResult:
-        """Run the full pre-flight sequence."""
+        """Run the full pre-flight sequence.
+
+        Args:
+            tool_name: The invoked tool's name (pre-NFKC; the manager normalizes).
+            tool_meta: Dict with keys ``server_id``, ``schema_hash``, and
+                ``description_hash``. ``schema_hash`` and ``description_hash``
+                must be 64-char lowercase hex SHA-256 digests. When called via
+                ``PolicyEngine.evaluate``, this is sourced from
+                ``context["tool"]``.
+
+        Returns:
+            A ``TrustResult`` whose ``verdict`` is ``ALLOW`` when the tool is
+            pinned and its fingerprint matches (or when ``mode=DISABLED``),
+            otherwise the configured ``on_mismatch`` / ``on_unknown`` verdict
+            with a machine-readable ``reason`` (``tool_meta_missing``,
+            ``tool_meta_invalid``, ``tool_shadow_detected``, ``tool_unknown``,
+            ``fingerprint_drift``).
+        """
         if self._config.mode == TrustMode.DISABLED:
             return TrustResult.ok()
 
         if not tool_meta:
             return self._mismatch(
                 "tool_meta_missing",
-                "Tool metadata (server_id, schema_hash, description_hash) required.",
+                "Pass context={'tool': {'server_id': ..., 'schema_hash': ..., "
+                "'description_hash': ...}} to PolicyEngine.evaluate().",
             )
 
         server_id = tool_meta.get("server_id", "")
@@ -107,14 +125,20 @@ class TrustManager:
         pinned = self._approved.get(key)
         if pinned is None:
             if self._config.auto_approve:
-                fp = ToolFingerprint(
-                    server_id=server_id,
-                    name=nfkc_name,
-                    schema_hash=schema_hash,
-                    description_hash=description_hash,
-                    first_seen=self._now(),
-                    approved_by=self._approved_by,
-                )
+                try:
+                    fp = ToolFingerprint(
+                        server_id=server_id,
+                        name=nfkc_name,
+                        schema_hash=schema_hash,
+                        description_hash=description_hash,
+                        first_seen=self._now(),
+                        approved_by=self._approved_by,
+                    )
+                except ValueError as exc:
+                    return self._mismatch(
+                        "tool_meta_invalid",
+                        f"Cannot auto-approve {server_id}:{tool_name}: {exc}",
+                    )
                 # mode != DISABLED path: writer is guaranteed non-None (see __init__).
                 assert self._writer is not None
                 self._writer.append(fp)
