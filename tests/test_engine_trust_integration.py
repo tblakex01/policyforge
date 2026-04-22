@@ -12,6 +12,7 @@ from policyforge.trust.models import (
     ToolFingerprint,
     TrustConfig,
     TrustMode,
+    TrustVerdict,
 )
 
 
@@ -124,6 +125,56 @@ class TestTrustPreflight:
         assert decision.verdict == Verdict.ALLOW
         assert decision.matched_rule == "permissive"
 
+    def test_warn_mode_log_only_flows_through_engine(self, policy_file, ledger_path):
+        """WARN mode + on_mismatch=LOG_ONLY should produce a LOG_ONLY Decision at engine level."""
+        ledger_path.touch()
+        tm = TrustManager(
+            TrustConfig(
+                mode=TrustMode.WARN,
+                ledger_path=ledger_path,
+                on_mismatch=TrustVerdict.LOG_ONLY,
+                on_unknown=TrustVerdict.LOG_ONLY,
+            ),
+            hmac_key="k",
+        )
+        engine = PolicyEngine(policy_paths=[policy_file], trust_manager=tm)
+        decision = engine.evaluate(
+            tool_name="unseen",
+            args={},
+            context={
+                "tool": {
+                    "server_id": "mcp://x",
+                    "schema_hash": "5" * 64,
+                    "description_hash": "7" * 64,
+                }
+            },
+        )
+        assert decision.verdict == Verdict.LOG_ONLY
+        assert decision.policy_name == "tool_trust"
+        assert decision.matched_rule == "tool_unknown"
+
+    def test_description_drift_denied_before_rules(self, policy_file, ledger_path):
+        """Drift in description_hash alone should also DENY before rules."""
+        pinned = _pin(ledger_path)
+        tm = TrustManager(
+            TrustConfig(mode=TrustMode.ENFORCE, ledger_path=ledger_path),
+            hmac_key="k",
+        )
+        engine = PolicyEngine(policy_paths=[policy_file], trust_manager=tm)
+        decision = engine.evaluate(
+            tool_name=pinned.name,
+            args={},
+            context={
+                "tool": {
+                    "server_id": pinned.server_id,
+                    "schema_hash": pinned.schema_hash,
+                    "description_hash": "9" * 64,  # only description drifted
+                }
+            },
+        )
+        assert decision.verdict == Verdict.DENY
+        assert decision.matched_rule == "fingerprint_drift"
+
 
 class TestTrustAudit:
     def test_trust_denial_emits_audit_event(self, policy_file, ledger_path, tmp_path, monkeypatch):
@@ -150,6 +201,21 @@ class TestTrustAudit:
         )
         files = list((tmp_path / "audit").glob("*.jsonl"))
         assert files, "no audit log file written"
-        content = files[0].read_text(encoding="utf-8")
-        assert "tool_unknown" in content
-        assert "DENY" in content
+        import json as _json
+
+        lines = [
+            _json.loads(line)
+            for line in files[0].read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert lines, "audit log was empty"
+        entry = lines[-1]
+        assert entry["verdict"] == "DENY"
+        assert entry["rule"] == "tool_unknown"
+        assert entry["policy"] == "tool_trust"
+        # HMAC chain integrity: the entry has a non-empty integrity hash,
+        # and verify_log reports zero tampered records.
+        assert entry["hmac"]
+        valid, tampered = audit.verify_log(files[0])
+        assert tampered == 0
+        assert valid == len(lines)
