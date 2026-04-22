@@ -26,12 +26,17 @@ class TestCanonicalize:
         # U+03BF GREEK SMALL LETTER OMICRON vs U+006F
         assert canonicalize("f\u03bfo") == canonicalize("foo")
 
-    def test_case_is_preserved_when_detect_case_false(self):
+    def test_case_is_folded_for_comparison(self):
         # By default, we fold to lowercase for comparison
         assert canonicalize("Foo") == canonicalize("foo")
 
     def test_non_homoglyph_chars_unchanged(self):
         assert canonicalize("plain_name") == "plain_name"
+
+    def test_casefold_handles_eszett(self):
+        # str.lower leaves U+00DF (ß) unchanged; str.casefold expands to "ss".
+        # This test pins the stricter behavior so a regression to .lower() fails.
+        assert canonicalize("stra\u00dfe") == canonicalize("strasse")
 
 
 class TestShadows:
@@ -51,3 +56,7 @@ class TestShadows:
 
     def test_fullwidth_shadows_ascii(self):
         assert shadows("\uff41pi", "api") is True
+
+    def test_cyrillic_t_shadows_latin(self):
+        # U+0442 CYRILLIC SMALL LETTER TE vs U+0074 LATIN SMALL LETTER T
+        assert shadows("dele\u0442_email", "delet_email") is True
