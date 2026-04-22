@@ -5,8 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from policyforge.loader import PolicyLoader, PolicyValidationError
+from policyforge.loader import PolicyLoader, PolicyValidationError, load_trust_config
 from policyforge.models import FailMode, Verdict
+from policyforge.trust.models import TrustMode, TrustVerdict
 
 
 @pytest.fixture
@@ -309,3 +310,66 @@ class TestMultiDocumentYaml:
         assert len(policies) == 2
         assert policies[0].name == "policy-a"
         assert policies[1].name == "policy-b"
+
+
+# --- Tool trust block ---
+
+
+class TestLoadTrustConfig:
+    def test_none_returns_disabled_default(self):
+        cfg = load_trust_config(None)
+        assert cfg.mode == TrustMode.DISABLED
+
+    def test_parses_full_block(self, tmp_path: Path):
+        raw = {
+            "mode": "enforce",
+            "ledger_path": str(tmp_path / "approvals.jsonl"),
+            "on_mismatch": "DENY",
+            "on_unknown": "LOG_ONLY",
+            "auto_approve": True,
+            "detect_shadowing": {"nfkc": True, "confusables": False},
+        }
+        cfg = load_trust_config(raw)
+        assert cfg.mode == TrustMode.ENFORCE
+        assert cfg.ledger_path == tmp_path / "approvals.jsonl"
+        assert cfg.on_mismatch == TrustVerdict.DENY
+        assert cfg.on_unknown == TrustVerdict.LOG_ONLY
+        assert cfg.auto_approve is True
+        assert cfg.detect_nfkc is True
+        assert cfg.detect_confusables is False
+
+    def test_unknown_mode_rejected(self):
+        with pytest.raises(PolicyValidationError, match="mode"):
+            load_trust_config({"mode": "bogus"})
+
+    def test_unknown_top_level_key_rejected(self):
+        with pytest.raises(PolicyValidationError, match="unknown"):
+            load_trust_config({"mode": "enforce", "mystery_key": 1})
+
+
+class TestLoaderYamlWithTrustBlock:
+    def test_load_file_surfaces_trust_config(self, tmp_path: Path):
+        policy_yaml = tmp_path / "p.yaml"
+        policy_yaml.write_text(
+            """
+tool_trust:
+  mode: enforce
+  ledger_path: approvals.jsonl
+  on_mismatch: DENY
+policies:
+  - name: demo
+    rules:
+      - name: allow_all
+        conditions:
+          - field: tool_name
+            operator: eq
+            value: anything
+        verdict: ALLOW
+""",
+            encoding="utf-8",
+        )
+        loader = PolicyLoader()
+        policies = loader.load_file(policy_yaml)
+        assert len(policies) == 1
+        assert loader.trust_config is not None
+        assert loader.trust_config.mode == TrustMode.ENFORCE

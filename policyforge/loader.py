@@ -16,6 +16,7 @@ from policyforge.models import (
     PolicyRule,
     Verdict,
 )
+from policyforge.trust.models import TrustConfig, TrustMode, TrustVerdict
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,70 @@ def _validate_policy(raw: dict[str, Any], filepath: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Trust config (tool_trust: top-level block)
+# --------------------------------------------------------------------------- #
+
+_TRUST_ALLOWED_KEYS = {
+    "mode",
+    "ledger_path",
+    "on_mismatch",
+    "on_unknown",
+    "auto_approve",
+    "detect_shadowing",
+}
+_SHADOW_ALLOWED_KEYS = {"nfkc", "confusables"}
+
+
+def load_trust_config(raw: dict[str, Any] | None) -> TrustConfig:
+    """Parse a ``tool_trust:`` YAML block into a TrustConfig.
+
+    ``raw=None`` returns the default (disabled) config.
+    """
+    if raw is None:
+        return TrustConfig()
+    if not isinstance(raw, dict):
+        raise PolicyValidationError("tool_trust block must be a mapping.")
+
+    unknown = raw.keys() - _TRUST_ALLOWED_KEYS
+    if unknown:
+        raise PolicyValidationError(f"tool_trust has unknown keys: {unknown}")
+
+    try:
+        mode = TrustMode(str(raw.get("mode", "disabled")).lower())
+    except ValueError as exc:
+        raise PolicyValidationError(f"tool_trust has invalid mode: {exc}") from exc
+
+    try:
+        on_mismatch = TrustVerdict(str(raw.get("on_mismatch", "DENY")).upper())
+        on_unknown = TrustVerdict(str(raw.get("on_unknown", "DENY")).upper())
+    except ValueError as exc:
+        raise PolicyValidationError(f"tool_trust has invalid verdict: {exc}") from exc
+
+    ledger_path_raw = raw.get("ledger_path")
+    if ledger_path_raw is None:
+        ledger_path = TrustConfig().ledger_path
+    else:
+        ledger_path = Path(str(ledger_path_raw))
+
+    shadow = raw.get("detect_shadowing") or {}
+    if not isinstance(shadow, dict):
+        raise PolicyValidationError("detect_shadowing must be a mapping.")
+    unknown_shadow = shadow.keys() - _SHADOW_ALLOWED_KEYS
+    if unknown_shadow:
+        raise PolicyValidationError(f"detect_shadowing has unknown keys: {unknown_shadow}")
+
+    return TrustConfig(
+        mode=mode,
+        ledger_path=ledger_path,
+        on_mismatch=on_mismatch,
+        on_unknown=on_unknown,
+        auto_approve=bool(raw.get("auto_approve", False)),
+        detect_nfkc=bool(shadow.get("nfkc", True)),
+        detect_confusables=bool(shadow.get("confusables", True)),
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Parsing helpers
 # --------------------------------------------------------------------------- #
 
@@ -128,20 +193,18 @@ def _parse_policy(raw: dict[str, Any]) -> Policy:
 
 
 class PolicyLoader:
-    """Load and validate policies from YAML files or directories.
+    """Load and validate policies from YAML files or directories."""
 
-    Usage:
-        loader = PolicyLoader()
-        policies = loader.load_directory("/etc/policyforge/policies")
-        policies = loader.load_file("my_policy.yaml")
-    """
+    def __init__(self) -> None:
+        self.trust_config: TrustConfig | None = None
 
     def load_file(self, path: str | Path) -> list[Policy]:
         """Load one or more policies from a single YAML file.
 
         A file may contain either a single policy mapping or a list of
         policy mappings (via YAML multi-document ``---`` separators or a
-        top-level ``policies`` key).
+        top-level ``policies`` key).  An optional ``tool_trust:`` top-level
+        key is extracted and stored in ``self.trust_config``.
         """
         path = Path(path)
         if not path.exists():
@@ -152,10 +215,11 @@ class PolicyLoader:
         text = path.read_text(encoding="utf-8")
         docs: list[dict[str, Any]] = []
 
-        # Support multi-document YAML
         for doc in yaml.safe_load_all(text):
             if doc is None:
                 continue
+            if isinstance(doc, dict) and "tool_trust" in doc:
+                self.trust_config = load_trust_config(doc.get("tool_trust"))
             if isinstance(doc, dict) and "policies" in doc:
                 if not isinstance(doc["policies"], list):
                     raise PolicyValidationError(
@@ -164,7 +228,7 @@ class PolicyLoader:
                 docs.extend(doc["policies"])
             elif isinstance(doc, list):
                 docs.extend(doc)
-            else:
+            elif isinstance(doc, dict) and "tool_trust" not in doc or not isinstance(doc, dict):
                 docs.append(doc)
 
         policies: list[Policy] = []
@@ -172,7 +236,10 @@ class PolicyLoader:
             _validate_policy(raw, str(path))
             policies.append(_parse_policy(raw))
             logger.info(
-                "Loaded policy '%s' v%s from %s", policies[-1].name, policies[-1].version, path
+                "Loaded policy '%s' v%s from %s",
+                policies[-1].name,
+                policies[-1].version,
+                path,
             )
 
         return policies
