@@ -19,3 +19,6 @@ audit_logs/
 *.sqlite3
 .venv/
 venv/
+
+# Git worktrees created by superpowers
+.worktrees/
