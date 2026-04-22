@@ -66,18 +66,26 @@ class TrustResult:
 
     @classmethod
     def ok(cls) -> TrustResult:
+        """Build an ALLOW result with no reason."""
         return cls(verdict=TrustVerdict.ALLOW)
 
     @classmethod
     def deny(cls, reason: str, message: str = "") -> TrustResult:
+        """Build a DENY result with a short machine-readable reason and optional message."""
         return cls(verdict=TrustVerdict.DENY, reason=reason, message=message)
 
     @classmethod
     def log_only(cls, reason: str, message: str = "") -> TrustResult:
+        """Build a LOG_ONLY result; used in WARN mode to surface issues without blocking."""
         return cls(verdict=TrustVerdict.LOG_ONLY, reason=reason, message=message)
 
 
 def canonical_schema_hash(schema: dict[str, Any]) -> str:
-    """SHA-256 over a canonical JSON serialization (sorted keys, no whitespace)."""
-    payload = json.dumps(schema, sort_keys=True, separators=(",", ":"), default=str)
+    """SHA-256 over a canonical JSON serialization (sorted keys, no whitespace).
+
+    Tool schemas must be JSON-native. Non-JSON-serializable values raise
+    TypeError rather than being silently coerced — a collision in coerced
+    strings would undermine fingerprint integrity.
+    """
+    payload = json.dumps(schema, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()

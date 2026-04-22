@@ -55,6 +55,12 @@ class TestCanonicalSchemaHash:
         expected = hashlib.sha256(payload.encode("utf-8")).hexdigest()
         assert canonical_schema_hash({"x": 1}) == expected
 
+    def test_rejects_non_json_native_value(self):
+        import datetime
+
+        with pytest.raises(TypeError):
+            canonical_schema_hash({"when": datetime.datetime(2026, 1, 1)})
+
 
 class TestTrustConfig:
     def test_defaults(self):
@@ -81,5 +87,11 @@ class TestTrustResult:
     def test_deny_result(self):
         r = TrustResult.deny("fingerprint_drift", "schema hash changed")
         assert r.verdict == TrustVerdict.DENY
+        assert r.reason == "fingerprint_drift"
+        assert r.message == "schema hash changed"
+
+    def test_log_only_result(self):
+        r = TrustResult.log_only("fingerprint_drift", "schema hash changed")
+        assert r.verdict == TrustVerdict.LOG_ONLY
         assert r.reason == "fingerprint_drift"
         assert r.message == "schema hash changed"
