@@ -177,9 +177,7 @@ class TestTrustPreflight:
 
 
 class TestTrustConfigOrphanWarning:
-    def test_warns_when_yaml_trust_but_no_manager(self, tmp_path, caplog):
-        import logging
-
+    def test_fails_when_yaml_trust_but_no_manager(self, tmp_path):
         policy_yaml = tmp_path / "p.yaml"
         policy_yaml.write_text(
             """
@@ -197,9 +195,8 @@ policies:
 """,
             encoding="utf-8",
         )
-        with caplog.at_level(logging.WARNING, logger="policyforge.engine"):
+        with pytest.raises(RuntimeError, match="tool_trust.mode=enforce"):
             PolicyEngine(policy_paths=[policy_yaml])
-        assert any("no TrustManager was passed" in rec.message for rec in caplog.records)
 
     def test_no_warning_when_trust_manager_present(self, tmp_path, ledger_path, caplog):
         import logging

@@ -13,7 +13,7 @@ from policyforge.decorators import (
     policy_gate,
 )
 from policyforge.engine import PolicyEngine
-from policyforge.models import Verdict
+from policyforge.models import Decision, Verdict
 
 
 @pytest.fixture
@@ -162,6 +162,121 @@ class TestPolicyGateWrapper:
         safe_fn = wrapper.wrap(lambda: "x", tool_name="any")
         with pytest.raises(PolicyDeniedError):
             safe_fn()
+
+
+class TestPerToolMeta:
+    def test_wrap_passes_tool_meta_via_context(self):
+        seen_contexts: list[dict[str, object]] = []
+
+        class FakeEngine:
+            def evaluate(self, tool_name, args, context):  # noqa: ANN001, ANN201
+                seen_contexts.append(context or {})
+                return Decision(verdict=Verdict.ALLOW)
+
+        def my_tool(x: int) -> int:
+            return x + 1
+
+        wrapper = PolicyGateWrapper(engine=FakeEngine())  # type: ignore[arg-type]
+        wrapped = wrapper.wrap(
+            my_tool,
+            tool_meta={
+                "server_id": "mcp://x",
+                "schema_hash": "a" * 64,
+                "description_hash": "b" * 64,
+            },
+        )
+
+        wrapped(1)
+
+        tool = seen_contexts[-1].get("tool")
+        assert isinstance(tool, dict)
+        assert tool.get("server_id") == "mcp://x"
+
+    def test_wrap_dict_per_tool_meta_dict(self):
+        seen: list[tuple[str, dict[str, object]]] = []
+
+        class FakeEngine:
+            def evaluate(self, tool_name, args, context):  # noqa: ANN001, ANN201
+                seen.append((tool_name, context or {}))
+                return Decision(verdict=Verdict.ALLOW)
+
+        def fa(x):  # noqa: ANN001, ANN202
+            return x
+
+        def fb(x):  # noqa: ANN001, ANN202
+            return x
+
+        wrapper = PolicyGateWrapper(engine=FakeEngine())  # type: ignore[arg-type]
+        wrapped = wrapper.wrap_dict(
+            {"fa": fa, "fb": fb},
+            tool_meta={
+                "fa": {
+                    "server_id": "mcp://a",
+                    "schema_hash": "a" * 64,
+                    "description_hash": "b" * 64,
+                },
+                "fb": {
+                    "server_id": "mcp://b",
+                    "schema_hash": "c" * 64,
+                    "description_hash": "d" * 64,
+                },
+            },
+        )
+
+        wrapped["fa"](1)
+        wrapped["fb"](2)
+
+        first_tool = seen[0][1]["tool"]
+        second_tool = seen[1][1]["tool"]
+        assert isinstance(first_tool, dict)
+        assert isinstance(second_tool, dict)
+        assert first_tool["server_id"] == "mcp://a"
+        assert second_tool["server_id"] == "mcp://b"
+
+    def test_wrap_dict_per_tool_meta_callable(self):
+        seen: list[tuple[str, dict[str, object]]] = []
+
+        class FakeEngine:
+            def evaluate(self, tool_name, args, context):  # noqa: ANN001, ANN201
+                seen.append((tool_name, context or {}))
+                return Decision(verdict=Verdict.ALLOW)
+
+        def fa(x):  # noqa: ANN001, ANN202
+            return x
+
+        def meta_for(tool_name: str) -> dict[str, str]:
+            return {
+                "server_id": f"mcp://{tool_name}",
+                "schema_hash": "e" * 64,
+                "description_hash": "f" * 64,
+            }
+
+        wrapper = PolicyGateWrapper(engine=FakeEngine())  # type: ignore[arg-type]
+        wrapped = wrapper.wrap_dict({"fa": fa}, tool_meta=meta_for)
+
+        wrapped["fa"](1)
+
+        tool = seen[0][1]["tool"]
+        assert isinstance(tool, dict)
+        assert tool["server_id"] == "mcp://fa"
+
+    def test_wrap_dict_no_tool_meta_preserves_legacy(self):
+        seen: list[dict[str, object]] = []
+
+        class FakeEngine:
+            def evaluate(self, tool_name, args, context):  # noqa: ANN001, ANN201
+                seen.append(context or {})
+                return Decision(verdict=Verdict.ALLOW)
+
+        def fa(x):  # noqa: ANN001, ANN202
+            return x
+
+        wrapper = PolicyGateWrapper(engine=FakeEngine())  # type: ignore[arg-type]
+        wrapped = wrapper.wrap_dict({"fa": fa})
+
+        wrapped["fa"](1)
+
+        assert "tool" not in seen[0]
 
 
 class TestLogOnlyThroughDecorator:

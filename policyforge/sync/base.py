@@ -102,7 +102,11 @@ class SyncProvider(ABC):
             relative_key = normalized_key[len(normalized_prefix) :]
 
         relative_path = PurePosixPath(relative_key)
-        if not relative_path.parts or any(part in ("", ".", "..") for part in relative_path.parts):
+        if (
+            relative_path.is_absolute()
+            or not relative_path.parts
+            or any(part in ("", ".", "..") for part in relative_path.parts)
+        ):
             raise ValueError(f"Unsafe remote key: {remote_key}")
 
         return Path(*relative_path.parts)

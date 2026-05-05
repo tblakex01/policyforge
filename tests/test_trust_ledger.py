@@ -1,6 +1,7 @@
 """Tests for the approvals ledger."""
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -83,6 +84,28 @@ class TestLedgerWriter:
         first = json.loads(lines[0])
         second = json.loads(lines[1])
         assert second["chain_prev"] == first["hmac"]
+
+    def test_append_is_atomic_no_partial_lines_after_replace_failure(
+        self,
+        ledger_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        writer = LedgerWriter(path=ledger_path, hmac_key="k")
+        first = ToolFingerprint("mcp://github", "a", "a" * 64, "b" * 64, 1.0, "alice")
+        writer.append(first)
+        before = ledger_path.read_bytes()
+
+        def failing_replace(src: str, dst: str) -> None:
+            raise OSError(f"simulated replace failure from {src} to {dst}")
+
+        monkeypatch.setattr(os, "replace", failing_replace)
+        second = ToolFingerprint("mcp://github", "b", "c" * 64, "d" * 64, 2.0, "bob")
+
+        with pytest.raises(OSError, match="simulated replace failure"):
+            writer.append(second)
+
+        assert ledger_path.read_bytes() == before
+        assert list(ledger_path.parent.glob(f"{ledger_path.name}.tmp.*")) == []
 
     def test_writer_refuses_to_open_tampered_ledger(self, ledger_path):
         """Tamper in the existing file must fail the writer's init, not be silently accepted."""

@@ -21,7 +21,10 @@ audit = AuditLogger(log_dir=tempfile.mkdtemp(prefix="audit_"), chain_hashes=True
 policy_dir = Path(__file__).resolve().parent.parent / "policyforge" / "policies"
 
 engine = PolicyEngine(
-    policy_paths=[policy_dir],
+    policy_paths=[
+        policy_dir / "default.yaml",
+        policy_dir / "hospitality_pii.yaml",
+    ],
     audit_logger=audit,
     agent_id="example-agent-01",
 )

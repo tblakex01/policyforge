@@ -190,6 +190,10 @@ class TestPathTraversalSecurity:
         with pytest.raises(ValueError, match="Unsafe remote key"):
             provider.local_relative_path_for("policies\\..\\..\\etc\\passwd")
 
+    def test_rejects_absolute_path_after_prefix_strip(self, provider):
+        with pytest.raises(ValueError, match="Unsafe remote key"):
+            provider.local_relative_path_for("policies//etc/passwd")
+
     def test_accepts_valid_nested_key(self, provider):
         result = provider.local_relative_path_for("policies/team-a/policy.yaml")
         assert result == Path("team-a") / "policy.yaml"

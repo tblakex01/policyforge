@@ -132,6 +132,8 @@ class PolicyEngine:
         self._audit = audit_logger
         self._agent_id = agent_id
         self._trust = trust_manager
+        if self._audit is not None and self._trust is not None:
+            self._trust.set_audit_logger(self._audit)
 
         if policy_paths:
             for p in policy_paths:
@@ -149,7 +151,7 @@ class PolicyEngine:
             self._policies.extend(self._loader.load_directory(path))
         else:
             self._policies.extend(self._loader.load_file(path))
-        self._warn_if_trust_config_orphaned()
+        self._ensure_trust_config_wired()
 
     def reload(self, policy_paths: list[str | Path]) -> None:
         """Replace all policies with a fresh load from the given paths."""
@@ -244,13 +246,8 @@ class PolicyEngine:
 
         return receipt
 
-    def _warn_if_trust_config_orphaned(self) -> None:
-        """Warn once when YAML configures tool_trust but no TrustManager was wired.
-
-        This surfaces a silent-no-op foot-gun: an operator sets
-        ``tool_trust.mode: enforce`` in YAML expecting the engine to enforce,
-        but forgot to construct a TrustManager with ``PolicyEngine(trust_manager=...)``.
-        """
+    def _ensure_trust_config_wired(self) -> None:
+        """Fail fast when YAML configures tool_trust but no TrustManager was wired."""
         from policyforge.trust.models import TrustMode
 
         trust_cfg = getattr(self._loader, "trust_config", None)
@@ -260,14 +257,11 @@ class PolicyEngine:
             return
         if self._trust is not None:
             return
-        if getattr(self, "_trust_warning_emitted", False):
-            return
-        logger.warning(
+        message = (
             "tool_trust.mode=%s configured in YAML but no TrustManager was "
-            "passed to PolicyEngine(trust_manager=...). Trust checks will NOT run.",
-            trust_cfg.mode.value,
+            "passed to PolicyEngine(trust_manager=...). Trust checks cannot run."
         )
-        self._trust_warning_emitted = True
+        raise RuntimeError(message % trust_cfg.mode.value)
 
     def _preflight_trust(self, tool_name: str, context: dict[str, Any]) -> Decision | None:
         """Run the trust manager before rule evaluation.
