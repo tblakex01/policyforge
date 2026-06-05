@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from policyforge.audit import AuditLogger
-from policyforge.engine import PolicyEngine, _hash_args
+from policyforge.engine import PolicyEngine, _hash_args, _resolve_field
 from policyforge.models import Verdict
 
 
@@ -903,3 +903,21 @@ class TestFieldResolution:
         # args.nested is a string, not a dict — traversal should fail safely
         decision = engine.evaluate("tool", {"nested": "flat-string"})
         assert decision.verdict == Verdict.ALLOW
+
+
+class TestResolveField:
+    def test_resolve_field_success(self):
+        context = {"args": {"url": "https://example.com"}}
+        assert _resolve_field(context, "args.url") == "https://example.com"
+
+    def test_resolve_field_missing_key(self):
+        context = {"a": {}}
+        with pytest.raises(KeyError, match="Field 'a.b' not found at segment 'b'"):
+            _resolve_field(context, "a.b")
+
+    def test_resolve_field_non_dict_traversal(self):
+        context = {"a": 1}
+        with pytest.raises(
+            KeyError, match="Cannot traverse into non-dict at segment 'b' in path 'a.b'"
+        ):
+            _resolve_field(context, "a.b")
