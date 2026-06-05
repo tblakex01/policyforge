@@ -18,9 +18,7 @@ from policyforge.models import Verdict
 
 @pytest.fixture
 def engine(tmp_path):
-    (tmp_path / "policy.yaml").write_text(
-        textwrap.dedent(
-            """\
+    (tmp_path / "policy.yaml").write_text(textwrap.dedent("""\
         name: decorator-test
         default_verdict: ALLOW
         rules:
@@ -32,9 +30,7 @@ def engine(tmp_path):
               - field: tool_name
                 operator: in
                 value: ["dangerous_tool", "rm_rf"]
-    """
-        )
-    )
+    """))
     return PolicyEngine(policy_paths=[tmp_path])
 
 
@@ -88,9 +84,7 @@ class TestPolicyGateDecorator:
             asyncio.run(async_danger())
 
     def test_default_arguments_are_available_to_policy(self, tmp_path):
-        (tmp_path / "defaults.yaml").write_text(
-            textwrap.dedent(
-                """\
+        (tmp_path / "defaults.yaml").write_text(textwrap.dedent("""\
             name: defaults-test
             default_verdict: ALLOW
             rules:
@@ -103,9 +97,7 @@ class TestPolicyGateDecorator:
                   - field: args.max_results
                     operator: gt
                     value: 5
-        """
-            )
-        )
+        """))
         engine = PolicyEngine(policy_paths=[tmp_path])
 
         @policy_gate(engine, tool_name="search")
@@ -141,9 +133,7 @@ class TestPolicyGateWrapper:
             safe_tools["dangerous_tool"]()
 
     def test_extra_context_propagated(self, tmp_path):
-        (tmp_path / "p.yaml").write_text(
-            textwrap.dedent(
-                """\
+        (tmp_path / "p.yaml").write_text(textwrap.dedent("""\
             name: ctx-test
             default_verdict: ALLOW
             rules:
@@ -153,9 +143,7 @@ class TestPolicyGateWrapper:
                   - field: environment
                     operator: eq
                     value: production
-        """
-            )
-        )
+        """))
         engine = PolicyEngine(policy_paths=[tmp_path])
         wrapper = PolicyGateWrapper(engine, extra_context={"environment": "production"})
 
@@ -166,9 +154,7 @@ class TestPolicyGateWrapper:
 
 class TestLogOnlyThroughDecorator:
     def test_log_only_allows_execution_and_logs(self, tmp_path, caplog):
-        (tmp_path / "log.yaml").write_text(
-            textwrap.dedent(
-                """\
+        (tmp_path / "log.yaml").write_text(textwrap.dedent("""\
             name: log-policy
             default_verdict: ALLOW
             rules:
@@ -179,9 +165,7 @@ class TestLogOnlyThroughDecorator:
                   - field: tool_name
                     operator: eq
                     value: search
-        """
-            )
-        )
+        """))
         engine = PolicyEngine(policy_paths=[tmp_path])
 
         @policy_gate(engine, tool_name="search")
@@ -197,9 +181,7 @@ class TestLogOnlyThroughDecorator:
 
 class TestMethodBinding:
     def test_decorator_on_instance_method(self, tmp_path):
-        (tmp_path / "p.yaml").write_text(
-            textwrap.dedent(
-                """\
+        (tmp_path / "p.yaml").write_text(textwrap.dedent("""\
             name: method-policy
             default_verdict: ALLOW
             rules:
@@ -209,9 +191,7 @@ class TestMethodBinding:
                   - field: args.action
                     operator: eq
                     value: admin
-        """
-            )
-        )
+        """))
         engine = PolicyEngine(policy_paths=[tmp_path])
 
         class Service:
@@ -225,9 +205,7 @@ class TestMethodBinding:
             svc.do_action(action="admin")
 
     def test_positional_args_resolved_for_methods(self, tmp_path):
-        (tmp_path / "p.yaml").write_text(
-            textwrap.dedent(
-                """\
+        (tmp_path / "p.yaml").write_text(textwrap.dedent("""\
             name: positional-policy
             default_verdict: ALLOW
             rules:
@@ -237,9 +215,7 @@ class TestMethodBinding:
                   - field: args.count
                     operator: gt
                     value: 100
-        """
-            )
-        )
+        """))
         engine = PolicyEngine(policy_paths=[tmp_path])
 
         class Worker:
