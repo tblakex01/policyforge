@@ -4,6 +4,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
+import yaml
 
 from policyforge.loader import PolicyLoader, PolicyValidationError, load_trust_config
 from policyforge.models import FailMode, Verdict
@@ -271,11 +272,10 @@ class TestLoadDirectory:
         names = {p.name for p in policies}
         assert names == {"test-policy", "second-policy"}
 
-    def test_skips_invalid_files(self, loader, tmp_policy_dir):
+    def test_rejects_invalid_files(self, loader, tmp_policy_dir):
         (tmp_policy_dir / "broken.yaml").write_text("not: valid: yaml: [")
-        # Should not raise — just skip the broken file
-        policies = loader.load_directory(tmp_policy_dir)
-        assert len(policies) >= 1
+        with pytest.raises(yaml.YAMLError):
+            loader.load_directory(tmp_policy_dir)
 
     def test_not_a_directory(self, loader):
         with pytest.raises(NotADirectoryError):
@@ -359,6 +359,68 @@ class TestLoadTrustConfig:
             load_trust_config(
                 {"mode": "enforce", "detect_shadowing": {"nfkc": True, "bogus": True}}
             )
+
+
+class TestTrustConfigPathResolution:
+    def test_relative_ledger_path_resolves_to_yaml_parent(self, tmp_path: Path):
+        yaml_dir = tmp_path / "etc" / "pf"
+        yaml_dir.mkdir(parents=True)
+        policy_yaml = yaml_dir / "pf.yaml"
+        policy_yaml.write_text(
+            """
+tool_trust:
+  mode: enforce
+  ledger_path: approvals.jsonl
+""",
+            encoding="utf-8",
+        )
+
+        loader = PolicyLoader()
+        loader.load_file(policy_yaml)
+
+        assert loader.trust_config is not None
+        assert loader.trust_config.ledger_path == yaml_dir / "approvals.jsonl"
+
+    def test_absolute_ledger_path_preserved(self, tmp_path: Path):
+        policy_yaml = tmp_path / "p.yaml"
+        abs_ledger = tmp_path / "custom" / "approvals.jsonl"
+        policy_yaml.write_text(
+            f"""
+tool_trust:
+  mode: enforce
+  ledger_path: {abs_ledger.as_posix()}
+""",
+            encoding="utf-8",
+        )
+
+        loader = PolicyLoader()
+        loader.load_file(policy_yaml)
+
+        assert loader.trust_config is not None
+        assert loader.trust_config.ledger_path == abs_ledger
+
+    def test_default_ledger_path_resolves_to_yaml_parent(self, tmp_path: Path):
+        yaml_dir = tmp_path / "proj"
+        yaml_dir.mkdir()
+        policy_yaml = yaml_dir / "p.yaml"
+        policy_yaml.write_text(
+            """
+tool_trust:
+  mode: enforce
+""",
+            encoding="utf-8",
+        )
+
+        loader = PolicyLoader()
+        loader.load_file(policy_yaml)
+
+        assert loader.trust_config is not None
+        assert loader.trust_config.ledger_path == yaml_dir / ".policyforge" / "approvals.jsonl"
+
+    def test_standalone_load_trust_config_leaves_relative(self):
+        cfg = load_trust_config({"mode": "enforce", "ledger_path": "approvals.jsonl"})
+
+        assert cfg.ledger_path == Path("approvals.jsonl")
 
 
 class TestLoaderYamlWithTrustBlock:

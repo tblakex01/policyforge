@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import time
+import uuid
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from policyforge.trust._normalize import nfkc
 from policyforge.trust.ledger import LedgerReader, LedgerWriter
@@ -15,6 +16,9 @@ from policyforge.trust.models import (
     TrustResult,
 )
 from policyforge.trust.shadowing import canonicalize
+
+if TYPE_CHECKING:
+    from policyforge.audit import AuditLogger
 
 
 class TrustManager:
@@ -35,6 +39,7 @@ class TrustManager:
         *,
         approved_by: str = "auto",
         now: Callable[[], float] = time.time,
+        audit_logger: AuditLogger | None = None,
     ) -> None:
         """Initialize the trust manager.
 
@@ -46,6 +51,7 @@ class TrustManager:
             approved_by: Identifier recorded in the ledger for auto-approved entries
                 (``auto_approve=True``). Ignored otherwise.
             now: Injectable clock for tests.
+            audit_logger: Optional audit sink for typed trust events.
 
         Note:
             The approvals ledger is snapshotted into memory at construction.
@@ -55,6 +61,7 @@ class TrustManager:
         self._config = config
         self._approved_by = approved_by
         self._now = now
+        self._audit_logger = audit_logger
         if config.mode != TrustMode.DISABLED:
             self._writer: LedgerWriter | None = LedgerWriter(
                 path=config.ledger_path, hmac_key=hmac_key
@@ -67,6 +74,11 @@ class TrustManager:
             self._writer = None
             self._reader = None
             self._approved = {}
+
+    def set_audit_logger(self, audit_logger: AuditLogger) -> None:
+        """Attach an AuditLogger when one was not provided at construction."""
+        if self._audit_logger is None:
+            self._audit_logger = audit_logger
 
     def check(
         self,
@@ -95,6 +107,7 @@ class TrustManager:
             return TrustResult.ok()
 
         if not tool_meta:
+            self._emit_event("tool_meta_missing", tool_name, "")
             return self._mismatch(
                 "tool_meta_missing",
                 "Pass context={'tool': {'server_id': ..., 'schema_hash': ..., "
@@ -116,6 +129,12 @@ class TrustManager:
                 if stored_name == nfkc_name:
                     continue
                 if canonicalize(stored_name) == incoming_canon:
+                    self._emit_event(
+                        "tool_shadow_detected",
+                        tool_name,
+                        server_id,
+                        extra={"shadowed_name": stored_name},
+                    )
                     return self._mismatch(
                         "tool_shadow_detected",
                         f"Name '{tool_name}' shadows approved '{stored_name}'.",
@@ -134,7 +153,8 @@ class TrustManager:
                         first_seen=self._now(),
                         approved_by=self._approved_by,
                     )
-                except ValueError as exc:
+                except (TypeError, ValueError) as exc:
+                    self._emit_event("tool_meta_invalid", tool_name, server_id)
                     return self._mismatch(
                         "tool_meta_invalid",
                         f"Cannot auto-approve {server_id}:{tool_name}: {exc}",
@@ -143,8 +163,18 @@ class TrustManager:
                 assert self._writer is not None
                 self._writer.append(fp)
                 self._approved[key] = fp
+                self._emit_event(
+                    "tool_approved",
+                    tool_name,
+                    server_id,
+                    extra={
+                        "schema_hash": schema_hash,
+                        "description_hash": description_hash,
+                    },
+                )
                 return TrustResult.ok()
             verdict = self._config.on_unknown
+            self._emit_event("tool_unknown", tool_name, server_id)
             return TrustResult(
                 verdict=verdict,
                 reason="tool_unknown",
@@ -153,6 +183,17 @@ class TrustManager:
 
         # 3. Fingerprint comparison.
         if pinned.schema_hash != schema_hash or pinned.description_hash != description_hash:
+            self._emit_event(
+                "fingerprint_drift",
+                tool_name,
+                server_id,
+                extra={
+                    "pinned_schema_hash": pinned.schema_hash,
+                    "pinned_description_hash": pinned.description_hash,
+                    "incoming_schema_hash": schema_hash,
+                    "incoming_description_hash": description_hash,
+                },
+            )
             return self._mismatch(
                 "fingerprint_drift",
                 f"Fingerprint drift for {server_id}:{tool_name}.",
@@ -166,4 +207,29 @@ class TrustManager:
             verdict=self._config.on_mismatch,
             reason=reason,
             message=message,
+        )
+
+    def _emit_event(
+        self,
+        event_type: str,
+        tool_name: str,
+        server_id: str,
+        *,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """Emit a typed trust event without changing the policy decision."""
+        if self._audit_logger is None:
+            return
+
+        metadata: dict[str, Any] = {
+            "server_id": server_id,
+            "tool_name": tool_name,
+        }
+        if extra:
+            metadata.update(extra)
+        self._audit_logger.log_event(
+            request_id=uuid.uuid4().hex[:16],
+            event_type=event_type,
+            tool_name=tool_name,
+            metadata=metadata,
         )

@@ -10,7 +10,7 @@ import asyncio
 import functools
 import inspect
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, TypeVar
 
 from policyforge.engine import PolicyEngine
@@ -19,6 +19,8 @@ from policyforge.models import Decision, Verdict
 logger = logging.getLogger(__name__)
 
 F = TypeVar("F", bound=Callable[..., Any])
+ToolMeta = dict[str, Any]
+ToolMetaSource = Mapping[str, ToolMeta | None] | Callable[[str], ToolMeta | None]
 
 
 class PolicyDeniedError(Exception):
@@ -48,11 +50,25 @@ def _bind_positional_args(
         return kwargs
 
 
+def _merge_context(
+    extra_context: dict[str, Any] | None,
+    tool_meta: ToolMeta | None,
+) -> dict[str, Any] | None:
+    """Build an evaluation context without mutating caller-owned dictionaries."""
+    if extra_context is None and tool_meta is None:
+        return None
+    context = dict(extra_context or {})
+    if tool_meta is not None:
+        context["tool"] = dict(tool_meta)
+    return context
+
+
 def policy_gate(
     engine: PolicyEngine,
     *,
     tool_name: str | None = None,
     extra_context: dict[str, Any] | None = None,
+    tool_meta: ToolMeta | None = None,
 ) -> Callable[[F], F]:
     """Decorator that gates a function behind policy evaluation.
 
@@ -74,6 +90,7 @@ def policy_gate(
                    Defaults to the decorated function's __name__.
         extra_context: Static context merged into every evaluation
                        (e.g., {"environment": "production"}).
+        tool_meta: Static fingerprint metadata merged as ``context["tool"]``.
     """
 
     def decorator(func: F) -> F:
@@ -90,7 +107,7 @@ def policy_gate(
                 decision = engine.evaluate(
                     tool_name=resolved_name,
                     args=_bind_positional_args(cached_sig, args, kwargs),
-                    context=extra_context,
+                    context=_merge_context(extra_context, tool_meta),
                 )
                 _enforce(decision, resolved_name)
                 return await func(*args, **kwargs)
@@ -102,7 +119,7 @@ def policy_gate(
             decision = engine.evaluate(
                 tool_name=resolved_name,
                 args=_bind_positional_args(cached_sig, args, kwargs),
-                context=extra_context,
+                context=_merge_context(extra_context, tool_meta),
             )
             _enforce(decision, resolved_name)
             return func(*args, **kwargs)
@@ -170,15 +187,44 @@ class PolicyGateWrapper:
         self,
         func: Callable[..., Any],
         tool_name: str | None = None,
+        *,
+        extra_context: dict[str, Any] | None = None,
+        tool_meta: ToolMeta | None = None,
     ) -> Callable[..., Any]:
         """Wrap a single callable with policy gating."""
         name = tool_name or getattr(func, "__name__", "unknown_tool")
+        merged_context = dict(self._extra_context)
+        if extra_context:
+            merged_context.update(extra_context)
         return policy_gate(
             self._engine,
             tool_name=name,
-            extra_context=self._extra_context,
+            extra_context=merged_context,
+            tool_meta=tool_meta,
         )(func)
 
-    def wrap_dict(self, tools: dict[str, Callable[..., Any]]) -> dict[str, Callable[..., Any]]:
+    def wrap_dict(
+        self,
+        tools: dict[str, Callable[..., Any]],
+        *,
+        extra_context: dict[str, Any] | None = None,
+        tool_meta: ToolMetaSource | None = None,
+    ) -> dict[str, Callable[..., Any]]:
         """Wrap every callable in a name→function mapping."""
-        return {name: self.wrap(fn, tool_name=name) for name, fn in tools.items()}
+        return {
+            name: self.wrap(
+                fn,
+                tool_name=name,
+                extra_context=extra_context,
+                tool_meta=self._resolve_tool_meta(tool_meta, name),
+            )
+            for name, fn in tools.items()
+        }
+
+    @staticmethod
+    def _resolve_tool_meta(source: ToolMetaSource | None, tool_name: str) -> ToolMeta | None:
+        if source is None:
+            return None
+        if callable(source):
+            return source(tool_name)
+        return source.get(tool_name)

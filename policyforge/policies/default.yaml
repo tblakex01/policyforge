@@ -1,5 +1,5 @@
-# Default policy — deny high-risk tool calls, allow everything else.
-# Customize or add your own YAML files alongside this one.
+# Default policy — deny high-risk tool calls and unknown tools.
+# Customize explicit ALLOW rules for your own production tools.
 
 name: default-security
 description: >
@@ -9,7 +9,7 @@ description: >
   with domain-specific rules.
 version: "1.0.0"
 fail_mode: closed        # deny on evaluation error
-default_verdict: ALLOW   # if no rule matches, allow the call
+default_verdict: DENY    # if no rule matches, deny the call
 
 rules:
   # ── Deny shell / code execution tools ────────────────────────
@@ -72,3 +72,37 @@ rules:
       - field: args.count
         operator: gt
         value: 100
+
+  # ── Explicit allowlist for common safe demo tools ───────────
+  - name: allow-web-search
+    priority: 80
+    verdict: ALLOW
+    message: "Web search is allowed unless a higher-priority deny rule matches."
+    conditions:
+      - field: tool_name
+        operator: eq
+        value: "web_search"
+
+  - name: allow-read-sandbox
+    priority: 80
+    verdict: ALLOW
+    message: "Sandbox reads are allowed."
+    conditions:
+      - field: tool_name
+        operator: eq
+        value: "read_file"
+      - field: args.path
+        operator: regex
+        value: "^/tmp/sandbox/"
+
+  - name: allow-write-sandbox
+    priority: 80
+    verdict: ALLOW
+    message: "Sandbox writes are allowed."
+    conditions:
+      - field: tool_name
+        operator: in
+        value: ["write_file", "save_file", "create_file"]
+      - field: args.path
+        operator: regex
+        value: "^/tmp/sandbox/"

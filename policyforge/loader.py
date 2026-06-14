@@ -89,10 +89,15 @@ _TRUST_ALLOWED_KEYS = {
 _SHADOW_ALLOWED_KEYS = {"nfkc", "confusables"}
 
 
-def load_trust_config(raw: dict[str, Any] | None) -> TrustConfig:
+def load_trust_config(
+    raw: dict[str, Any] | None,
+    *,
+    base_dir: Path | None = None,
+) -> TrustConfig:
     """Parse a ``tool_trust:`` YAML block into a TrustConfig.
 
     ``raw=None`` returns the default (disabled) config.
+    ``base_dir`` anchors relative ledger paths to the policy YAML directory.
     """
     if raw is None:
         return TrustConfig()
@@ -119,6 +124,8 @@ def load_trust_config(raw: dict[str, Any] | None) -> TrustConfig:
         ledger_path = TrustConfig().ledger_path
     else:
         ledger_path = Path(str(ledger_path_raw))
+    if base_dir is not None and not ledger_path.is_absolute():
+        ledger_path = base_dir / ledger_path
 
     shadow = raw.get("detect_shadowing") or {}
     if not isinstance(shadow, dict):
@@ -225,7 +232,7 @@ class PolicyLoader:
                     logger.warning(
                         "Overwriting tool_trust config from a later document in %s", path
                     )
-                self.trust_config = load_trust_config(doc.get("tool_trust"))
+                self.trust_config = load_trust_config(doc.get("tool_trust"), base_dir=path.parent)
                 # Peel off tool_trust and see if the remaining dict is a policy.
                 remainder = {k: v for k, v in doc.items() if k != "tool_trust"}
                 if not remainder:
@@ -258,9 +265,10 @@ class PolicyLoader:
     def load_directory(self, path: str | Path) -> list[Policy]:
         """Recursively load all .yaml/.yml files from a directory.
 
-        Files are loaded in sorted order. If multiple files declare a
-        ``tool_trust:`` block, the last file (alphabetical order) wins;
-        a ``logger.warning`` is emitted when overwriting.
+        Files are loaded in sorted order. Invalid files raise immediately
+        so a broken deny policy cannot be silently skipped. If multiple
+        files declare a ``tool_trust:`` block, the last file (alphabetical
+        order) wins; a ``logger.warning`` is emitted when overwriting.
         """
         path = Path(path)
         if not path.is_dir():
@@ -269,10 +277,7 @@ class PolicyLoader:
         policies: list[Policy] = []
         for yaml_file in sorted(path.rglob("*.y*ml")):
             if yaml_file.suffix in (".yaml", ".yml"):
-                try:
-                    policies.extend(self.load_file(yaml_file))
-                except (PolicyValidationError, yaml.YAMLError, ValueError) as exc:
-                    logger.error("Skipping invalid policy file %s: %s", yaml_file, exc)
+                policies.extend(self.load_file(yaml_file))
 
         logger.info("Loaded %d policies from %s", len(policies), path)
         return policies

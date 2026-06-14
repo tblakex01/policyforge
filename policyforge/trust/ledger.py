@@ -6,7 +6,9 @@ import hashlib
 import hmac as _hmac
 import json
 import os
+import tempfile
 import threading
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -84,8 +86,23 @@ class LedgerWriter:
             record["chain_prev"] = self._last_hash
             record["hmac"] = _sign(_entry_payload(record), self._key)
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            with self._path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(record, separators=(",", ":")) + "\n")
+            line = json.dumps(record, separators=(",", ":")).encode("utf-8") + b"\n"
+            existing = self._path.read_bytes() if self._path.exists() else b""
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=f"{self._path.name}.tmp.",
+                dir=str(self._path.parent),
+            )
+            try:
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(existing)
+                    fh.write(line)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp_name, self._path)
+            except Exception:
+                with suppress(OSError):
+                    os.unlink(tmp_name)
+                raise
             self._last_hash = record["hmac"]
 
 
