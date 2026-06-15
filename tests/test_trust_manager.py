@@ -123,6 +123,23 @@ class TestTrustManagerEnforce:
         assert result.verdict == TrustVerdict.DENY
         assert result.reason == "tool_shadow_detected"
 
+    def test_nfkc_equivalent_raw_name_denied(self, ledger_path):
+        _pin(ledger_path, name="api")
+        cfg = TrustConfig(mode=TrustMode.ENFORCE, ledger_path=ledger_path)
+        tm = TrustManager(cfg, hmac_key="k")
+
+        result = tm.check(
+            tool_name="\uff41\uff50\uff49",
+            tool_meta={
+                "server_id": "mcp://github",
+                "schema_hash": "a" * 64,
+                "description_hash": "b" * 64,
+            },
+        )
+
+        assert result.verdict == TrustVerdict.DENY
+        assert result.reason == "tool_shadow_detected"
+
     def test_auto_approve_records_and_allows(self, ledger_path):
         cfg = TrustConfig(
             mode=TrustMode.ENFORCE,

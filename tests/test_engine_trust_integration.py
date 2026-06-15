@@ -10,6 +10,7 @@ from policyforge.trust.ledger import LedgerWriter
 from policyforge.trust.manager import TrustManager
 from policyforge.trust.models import (
     ToolFingerprint,
+    ToolMetadata,
     TrustConfig,
     TrustMode,
     TrustVerdict,
@@ -54,6 +55,16 @@ def _pin(ledger_path: Path, name: str = "create_issue") -> ToolFingerprint:
     return fp
 
 
+def _tool_context(server_id: str, schema_hash: str, description_hash: str) -> dict[str, object]:
+    return {
+        "tool": ToolMetadata(
+            server_id=server_id,
+            schema_hash=schema_hash,
+            description_hash=description_hash,
+        )
+    }
+
+
 class TestBackwardsCompat:
     def test_engine_without_trust_manager_behaves_identically(self, policy_file):
         engine = PolicyEngine(policy_paths=[policy_file])
@@ -72,13 +83,7 @@ class TestTrustPreflight:
         decision = engine.evaluate(
             tool_name="unseen",
             args={},
-            context={
-                "tool": {
-                    "server_id": "mcp://x",
-                    "schema_hash": "5" * 64,
-                    "description_hash": "7" * 64,
-                }
-            },
+            context=_tool_context("mcp://x", "5" * 64, "7" * 64),
         )
         assert decision.verdict == Verdict.DENY
         assert decision.matched_rule == "tool_unknown"
@@ -93,13 +98,7 @@ class TestTrustPreflight:
         decision = engine.evaluate(
             tool_name=pinned.name,
             args={},
-            context={
-                "tool": {
-                    "server_id": pinned.server_id,
-                    "schema_hash": "9" * 64,
-                    "description_hash": pinned.description_hash,
-                }
-            },
+            context=_tool_context(pinned.server_id, "9" * 64, pinned.description_hash),
         )
         assert decision.verdict == Verdict.DENY
         assert decision.matched_rule == "fingerprint_drift"
@@ -114,13 +113,7 @@ class TestTrustPreflight:
         decision = engine.evaluate(
             tool_name=pinned.name,
             args={},
-            context={
-                "tool": {
-                    "server_id": pinned.server_id,
-                    "schema_hash": pinned.schema_hash,
-                    "description_hash": pinned.description_hash,
-                }
-            },
+            context=_tool_context(pinned.server_id, pinned.schema_hash, pinned.description_hash),
         )
         assert decision.verdict == Verdict.ALLOW
         assert decision.matched_rule == "permissive"
@@ -141,13 +134,7 @@ class TestTrustPreflight:
         decision = engine.evaluate(
             tool_name="unseen",
             args={},
-            context={
-                "tool": {
-                    "server_id": "mcp://x",
-                    "schema_hash": "5" * 64,
-                    "description_hash": "7" * 64,
-                }
-            },
+            context=_tool_context("mcp://x", "5" * 64, "7" * 64),
         )
         assert decision.verdict == Verdict.LOG_ONLY
         assert decision.policy_name == "tool_trust"
@@ -164,20 +151,37 @@ class TestTrustPreflight:
         decision = engine.evaluate(
             tool_name=pinned.name,
             args={},
-            context={
-                "tool": {
-                    "server_id": pinned.server_id,
-                    "schema_hash": pinned.schema_hash,
-                    "description_hash": "9" * 64,  # only description drifted
-                }
-            },
+            context=_tool_context(pinned.server_id, pinned.schema_hash, "9" * 64),
         )
         assert decision.verdict == Verdict.DENY
         assert decision.matched_rule == "fingerprint_drift"
 
+    def test_raw_dict_tool_metadata_denied_before_rules(self, policy_file, ledger_path):
+        pinned = _pin(ledger_path)
+        tm = TrustManager(
+            TrustConfig(mode=TrustMode.ENFORCE, ledger_path=ledger_path),
+            hmac_key="k",
+        )
+        engine = PolicyEngine(policy_paths=[policy_file], trust_manager=tm)
+
+        decision = engine.evaluate(
+            tool_name=pinned.name,
+            args={},
+            context={
+                "tool": {
+                    "server_id": pinned.server_id,
+                    "schema_hash": pinned.schema_hash,
+                    "description_hash": pinned.description_hash,
+                }
+            },
+        )
+
+        assert decision.verdict == Verdict.DENY
+        assert decision.matched_rule == "tool_meta_untrusted"
+
 
 class TestTrustConfigOrphanWarning:
-    def test_warns_when_yaml_trust_but_no_manager(self, tmp_path, caplog):
+    def test_orphaned_enforce_trust_config_denies_when_no_manager(self, tmp_path, caplog):
         import logging
 
         policy_yaml = tmp_path / "p.yaml"
@@ -198,8 +202,13 @@ policies:
             encoding="utf-8",
         )
         with caplog.at_level(logging.WARNING, logger="policyforge.engine"):
-            PolicyEngine(policy_paths=[policy_yaml])
+            engine = PolicyEngine(policy_paths=[policy_yaml])
         assert any("no TrustManager was passed" in rec.message for rec in caplog.records)
+
+        decision = engine.evaluate("anything", {})
+
+        assert decision.verdict == Verdict.DENY
+        assert decision.matched_rule == "tool_trust_unwired"
 
     def test_no_warning_when_trust_manager_present(self, tmp_path, ledger_path, caplog):
         import logging
@@ -269,13 +278,7 @@ class TestTrustAudit:
         engine.evaluate(
             tool_name="unseen",
             args={},
-            context={
-                "tool": {
-                    "server_id": "mcp://x",
-                    "schema_hash": "5" * 64,
-                    "description_hash": "7" * 64,
-                }
-            },
+            context=_tool_context("mcp://x", "5" * 64, "7" * 64),
         )
         files = list((tmp_path / "audit").glob("*.jsonl"))
         assert files, "no audit log file written"

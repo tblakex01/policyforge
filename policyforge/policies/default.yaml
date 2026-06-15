@@ -1,4 +1,4 @@
-# Default policy — deny high-risk tool calls, allow everything else.
+# Default policy — deny high-risk tool calls and fail closed by default.
 # Customize or add your own YAML files alongside this one.
 
 name: default-security
@@ -9,7 +9,7 @@ description: >
   with domain-specific rules.
 version: "1.0.0"
 fail_mode: closed        # deny on evaluation error
-default_verdict: ALLOW   # if no rule matches, allow the call
+default_verdict: DENY    # if no rule matches, deny the call
 
 rules:
   # ── Deny shell / code execution tools ────────────────────────

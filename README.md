@@ -52,7 +52,7 @@ pip install policyforge[all-clouds]   # All three
 # policies/security.yaml
 name: default-security
 fail_mode: closed
-default_verdict: ALLOW
+default_verdict: DENY
 
 rules:
   - name: block-shell-exec
@@ -247,7 +247,7 @@ tool_trust:
 ```
 
 ```python
-from policyforge import PolicyEngine, TrustConfig, TrustManager, TrustMode
+from policyforge import PolicyEngine, ToolMetadata, TrustConfig, TrustManager, TrustMode
 
 trust = TrustManager(
     TrustConfig(mode=TrustMode.ENFORCE),
@@ -259,11 +259,11 @@ decision = engine.evaluate(
     tool_name="create_issue",
     args={"title": "..."},
     context={
-        "tool": {
-            "server_id": "mcp://github",
-            "schema_hash": "<sha256 of the tool's input schema>",
-            "description_hash": "<sha256 of the tool's description>",
-        }
+        "tool": ToolMetadata(
+            server_id="mcp://github",
+            schema_hash="<sha256 of the tool's input schema>",
+            description_hash="<sha256 of the tool's description>",
+        )
     },
 )
 ```

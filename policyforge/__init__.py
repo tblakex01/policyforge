@@ -14,6 +14,7 @@ from policyforge.models import (
 )
 from policyforge.trust import (
     ToolFingerprint,
+    ToolMetadata,
     TrustConfig,
     TrustManager,
     TrustMode,
@@ -36,6 +37,7 @@ __all__ = [
     "policy_gate",
     "PolicyGateWrapper",
     "ToolFingerprint",
+    "ToolMetadata",
     "TrustConfig",
     "TrustManager",
     "TrustMode",

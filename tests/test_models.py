@@ -33,6 +33,15 @@ class TestCondition:
         with pytest.raises(ValueError, match="Invalid regex"):
             Condition(field="x", operator="regex", value="(unclosed")
 
+    def test_nested_quantifier_regex_rejected(self):
+        with pytest.raises(ValueError, match="Unsafe regex"):
+            Condition(field="x", operator="regex", value=r"^(a+)+$")
+
+    def test_long_regex_input_rejected(self):
+        c = Condition(field="x", operator="regex", value=r"^a+$")
+        with pytest.raises(ValueError, match="Regex input exceeds"):
+            c.match_regex("a" * 4097)
+
     def test_match_regex_uses_compiled_pattern(self):
         c = Condition(field="x", operator="regex", value=r"\d{3}")
         assert c.match_regex("abc123def") is True

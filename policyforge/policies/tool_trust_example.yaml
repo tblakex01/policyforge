@@ -7,6 +7,8 @@
 #
 # auto_approve is dev-only. In production, pin fingerprints deliberately
 # via tooling and leave auto_approve: false.
+# PolicyEngine fails closed if this YAML config is loaded without an explicit
+# TrustManager instance.
 
 tool_trust:
   mode: enforce                     # enforce | warn | disabled

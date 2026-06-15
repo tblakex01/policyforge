@@ -53,6 +53,7 @@ class Condition:
     _VALID_OPS: ClassVar[frozenset[str]] = frozenset(
         {"eq", "neq", "in", "not_in", "contains", "regex", "gt", "lt", "gte", "lte"}
     )
+    _MAX_REGEX_INPUT_CHARS: ClassVar[int] = 4096
 
     def __post_init__(self) -> None:
         if self.operator not in self._VALID_OPS:
@@ -60,14 +61,19 @@ class Condition:
                 f"Invalid operator '{self.operator}'. Must be one of: {sorted(self._VALID_OPS)}"
             )
         if self.operator == "regex":
+            pattern = str(self.value)
+            if _has_nested_quantifier(pattern):
+                raise ValueError(f"Unsafe regex pattern '{self.value}': nested quantifiers")
             try:
-                compiled = re.compile(str(self.value))
+                compiled = re.compile(pattern)
             except re.error as exc:
                 raise ValueError(f"Invalid regex pattern '{self.value}': {exc}") from exc
             object.__setattr__(self, "_compiled_re", compiled)
 
     def match_regex(self, actual: str) -> bool:
         """Test whether actual matches this condition's compiled regex pattern."""
+        if len(actual) > self._MAX_REGEX_INPUT_CHARS:
+            raise ValueError(f"Regex input exceeds {self._MAX_REGEX_INPUT_CHARS} characters.")
         compiled = getattr(self, "_compiled_re", None)
         if compiled is not None:
             return bool(compiled.search(actual))
@@ -210,7 +216,33 @@ class AuditEntry:
     chain_prev: str = ""
 
     def _payload(self, include_event_fields: bool) -> str:
-        """Build the canonical payload used for HMAC signing."""
+        """Build the self-delimiting canonical payload used for HMAC signing."""
+        payload: dict[str, Any] = {
+            "v": 2,
+            "timestamp": self.timestamp,
+            "request_id": self.request_id,
+            "tool_name": self.tool_name,
+            "agent_id": self.agent_id,
+            "args_hash": self.args_hash,
+            "verdict": self.verdict,
+            "matched_rule": self.matched_rule,
+            "policy_name": self.policy_name,
+            "message": self.message,
+            "evaluation_ms": self.evaluation_ms,
+            "chain_prev": self.chain_prev,
+        }
+        if include_event_fields:
+            payload.update(
+                {
+                    "entry_type": self.entry_type,
+                    "event_type": self.event_type,
+                    "metadata": self.metadata,
+                }
+            )
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+
+    def _legacy_payload(self, include_event_fields: bool) -> str:
+        """Build the pre-v2 pipe-delimited payload for delimiter-free legacy logs."""
         base = (
             f"{self.timestamp}|{self.request_id}|{self.tool_name}|"
             f"{self.agent_id}|{self.args_hash}|{self.verdict}|"
@@ -221,7 +253,24 @@ class AuditEntry:
             return f"{base}|{self.chain_prev}"
 
         metadata = json.dumps(self.metadata, sort_keys=True, separators=(",", ":"), default=str)
-        return f"{base}|{self.entry_type}|{self.event_type}|" f"{metadata}|{self.chain_prev}"
+        return f"{base}|{self.entry_type}|{self.event_type}|{metadata}|{self.chain_prev}"
+
+    def _legacy_payload_allowed(self) -> bool:
+        """Return True only when legacy delimiter ambiguity cannot be exploited."""
+        fields = (
+            self.request_id,
+            self.tool_name,
+            self.agent_id,
+            self.args_hash,
+            self.verdict,
+            self.matched_rule,
+            self.policy_name,
+            self.message,
+            self.entry_type,
+            self.event_type,
+            self.chain_prev,
+        )
+        return all("|" not in value for value in fields)
 
     def compute_integrity(
         self, hmac_key: bytes, *, include_event_fields: bool | None = None
@@ -235,13 +284,80 @@ class AuditEntry:
         payload = self._payload(include_event_fields=use_event_fields)
         return _hmac.new(hmac_key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
+    def compute_legacy_integrity(
+        self, hmac_key: bytes, *, include_event_fields: bool | None = None
+    ) -> str:
+        """Return the pre-v2 HMAC for delimiter-free legacy log verification."""
+        import hmac as _hmac
+
+        use_event_fields = (
+            self.entry_type == "event" if include_event_fields is None else include_event_fields
+        )
+        payload = self._legacy_payload(include_event_fields=use_event_fields)
+        return _hmac.new(hmac_key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
     def seal(self, hmac_key: bytes) -> None:
         """Compute and set the integrity hash."""
         self.integrity_hash = self.compute_integrity(hmac_key)
 
     def verify(self, hmac_key: bytes, *, include_event_fields: bool | None = None) -> bool:
         """Return True if the stored hash matches a fresh computation."""
-        return hmac.compare_digest(
+        if hmac.compare_digest(
             self.integrity_hash,
             self.compute_integrity(hmac_key, include_event_fields=include_event_fields),
+        ):
+            return True
+        return self._legacy_payload_allowed() and hmac.compare_digest(
+            self.integrity_hash,
+            self.compute_legacy_integrity(hmac_key, include_event_fields=include_event_fields),
         )
+
+
+def _has_nested_quantifier(pattern: str) -> bool:
+    """Detect common catastrophic nested quantifier shapes before compiling."""
+    escaped = False
+    stack: list[bool] = []
+    last_closed_group_had_quantifier = False
+    i = 0
+    while i < len(pattern):
+        char = pattern[i]
+        if escaped:
+            escaped = False
+            last_closed_group_had_quantifier = False
+            i += 1
+            continue
+        if char == "\\":
+            escaped = True
+            i += 1
+            continue
+        if char == "(":
+            stack.append(False)
+            last_closed_group_had_quantifier = False
+            i += 1
+            continue
+        if char == ")" and stack:
+            last_closed_group_had_quantifier = stack.pop()
+            i += 1
+            continue
+        if char in "*+?":
+            if last_closed_group_had_quantifier:
+                return True
+            if stack:
+                stack[-1] = True
+            last_closed_group_had_quantifier = False
+            i += 1
+            continue
+        if char == "{":
+            end = pattern.find("}", i + 1)
+            if end != -1:
+                if last_closed_group_had_quantifier:
+                    return True
+                if stack:
+                    stack[-1] = True
+                last_closed_group_had_quantifier = False
+                i = end + 1
+                continue
+        if not char.isspace():
+            last_closed_group_had_quantifier = False
+        i += 1
+    return False

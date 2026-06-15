@@ -29,6 +29,25 @@ class TrustVerdict(str, Enum):
 
 
 @dataclass(frozen=True)
+class ToolMetadata:
+    """Trusted runtime metadata for an invoked tool.
+
+    Host integrations should build this from their trusted tool registry, not
+    from model- or caller-supplied request JSON.
+    """
+
+    server_id: str
+    schema_hash: str
+    description_hash: str
+
+    def __post_init__(self) -> None:
+        if not self.server_id:
+            raise ValueError("ToolMetadata.server_id is required.")
+        _validate_sha256_hex("ToolMetadata.schema_hash", self.schema_hash)
+        _validate_sha256_hex("ToolMetadata.description_hash", self.description_hash)
+
+
+@dataclass(frozen=True)
 class ToolFingerprint:
     """Pinned identity for an approved tool.
 
@@ -43,18 +62,8 @@ class ToolFingerprint:
     approved_by: str
 
     def __post_init__(self) -> None:
-        for field_name in ("schema_hash", "description_hash"):
-            value = getattr(self, field_name)
-            if len(value) != 64:
-                raise ValueError(
-                    f"ToolFingerprint.{field_name} must be 64 hex chars, got {len(value)}"
-                )
-            try:
-                int(value, 16)
-            except ValueError as exc:
-                raise ValueError(
-                    f"ToolFingerprint.{field_name} must be hex, got {value!r}"
-                ) from exc
+        _validate_sha256_hex("ToolFingerprint.schema_hash", self.schema_hash)
+        _validate_sha256_hex("ToolFingerprint.description_hash", self.description_hash)
 
 
 @dataclass(frozen=True)
@@ -103,3 +112,12 @@ def canonical_schema_hash(schema: dict[str, Any]) -> str:
     """
     payload = json.dumps(schema, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _validate_sha256_hex(field_name: str, value: str) -> None:
+    if len(value) != 64:
+        raise ValueError(f"{field_name} must be 64 hex chars, got {len(value)}")
+    try:
+        int(value, 16)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be hex, got {value!r}") from exc

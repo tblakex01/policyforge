@@ -7,7 +7,7 @@ description: >
   handling PCI-DSS and GDPR-regulated data.
 version: "1.0.0"
 fail_mode: closed
-default_verdict: ALLOW
+default_verdict: DENY
 
 rules:
   # ── Block direct PII lookups by guest name/email ─────────────

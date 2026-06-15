@@ -327,6 +327,33 @@ class TestFailClosed:
         assert "fail-closed" in decision.message.lower() or "error" in decision.message.lower()
         assert "123" not in decision.message
 
+    def test_eval_error_log_omits_raw_argument_value(self, tmp_path, caplog):
+        import logging
+
+        (tmp_path / "bad.yaml").write_text(
+            textwrap.dedent(
+                """\
+            name: log-redaction-policy
+            fail_mode: closed
+            default_verdict: ALLOW
+            rules:
+              - name: bad-compare
+                verdict: DENY
+                conditions:
+                  - field: args.value
+                    operator: gt
+                    value: 100
+        """
+            )
+        )
+        engine = PolicyEngine(policy_paths=[tmp_path])
+
+        with caplog.at_level(logging.ERROR, logger="policyforge.engine"):
+            decision = engine.evaluate("test_tool", {"value": "sk-live-secret-value"})
+
+        assert decision.verdict == Verdict.DENY
+        assert "sk-live-secret-value" not in caplog.text
+
 
 class TestFailOpen:
     def test_fail_open_policy(self, tmp_path):

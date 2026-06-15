@@ -249,6 +249,38 @@ class TestBundledPolicies:
             for p in policies:
                 assert p.name, f"Policy in {yaml_file.name} has empty name"
 
+    def test_default_policy_denies_unknown_execution_alias(self):
+        import policyforge
+        from policyforge import PolicyEngine
+
+        policies_dir = Path(policyforge.__file__).parent / "policies"
+        engine = PolicyEngine(policy_paths=[policies_dir / "default.yaml"])
+
+        assert engine.evaluate("python_repl", {}).verdict == Verdict.DENY
+
+    def test_default_policy_denies_metadata_url(self):
+        import policyforge
+        from policyforge import PolicyEngine
+
+        policies_dir = Path(policyforge.__file__).parent / "policies"
+        engine = PolicyEngine(policy_paths=[policies_dir / "default.yaml"])
+
+        decision = engine.evaluate(
+            "fetch_url",
+            {"url": "http://169.254.169.254/latest/meta-data/"},
+        )
+
+        assert decision.verdict == Verdict.DENY
+
+    def test_hospitality_policy_denies_non_email_pii_by_default(self):
+        import policyforge
+        from policyforge import PolicyEngine
+
+        policies_dir = Path(policyforge.__file__).parent / "policies"
+        engine = PolicyEngine(policy_paths=[policies_dir / "hospitality_pii.yaml"])
+
+        assert engine.evaluate("get_guest_profile", {"fields": ["phone"]}).verdict == Verdict.DENY
+
 
 class TestLoadDirectory:
     def test_loads_all_yaml_files(self, loader, tmp_policy_dir):
@@ -271,11 +303,10 @@ class TestLoadDirectory:
         names = {p.name for p in policies}
         assert names == {"test-policy", "second-policy"}
 
-    def test_skips_invalid_files(self, loader, tmp_policy_dir):
+    def test_rejects_invalid_files(self, loader, tmp_policy_dir):
         (tmp_policy_dir / "broken.yaml").write_text("not: valid: yaml: [")
-        # Should not raise — just skip the broken file
-        policies = loader.load_directory(tmp_policy_dir)
-        assert len(policies) >= 1
+        with pytest.raises(PolicyValidationError, match="Invalid policy file"):
+            loader.load_directory(tmp_policy_dir)
 
     def test_not_a_directory(self, loader):
         with pytest.raises(NotADirectoryError):

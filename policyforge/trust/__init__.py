@@ -3,6 +3,7 @@
 from policyforge.trust.manager import TrustManager
 from policyforge.trust.models import (
     ToolFingerprint,
+    ToolMetadata,
     TrustConfig,
     TrustMode,
     TrustResult,
@@ -12,6 +13,7 @@ from policyforge.trust.models import (
 
 __all__ = [
     "ToolFingerprint",
+    "ToolMetadata",
     "TrustConfig",
     "TrustManager",
     "TrustMode",

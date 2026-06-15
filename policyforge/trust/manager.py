@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from typing import Any
 
 from policyforge.trust._normalize import nfkc
 from policyforge.trust.ledger import LedgerReader, LedgerWriter
 from policyforge.trust.models import (
     ToolFingerprint,
+    ToolMetadata,
     TrustConfig,
     TrustMode,
     TrustResult,
@@ -71,17 +71,16 @@ class TrustManager:
     def check(
         self,
         tool_name: str,
-        tool_meta: dict[str, Any] | None,
+        tool_meta: ToolMetadata | dict[str, str] | None,
     ) -> TrustResult:
         """Run the full pre-flight sequence.
 
         Args:
             tool_name: The invoked tool's name (pre-NFKC; the manager normalizes).
-            tool_meta: Dict with keys ``server_id``, ``schema_hash``, and
-                ``description_hash``. ``schema_hash`` and ``description_hash``
-                must be 64-char lowercase hex SHA-256 digests. When called via
-                ``PolicyEngine.evaluate``, this is sourced from
-                ``context["tool"]``.
+            tool_meta: Trusted ToolMetadata for the invoked tool. Host
+                applications should build this from their tool registry, not
+                from model- or caller-supplied request JSON. When called via
+                ``PolicyEngine.evaluate``, this is sourced from ``context["tool"]``.
 
         Returns:
             A ``TrustResult`` whose ``verdict`` is ``ALLOW`` when the tool is
@@ -97,15 +96,34 @@ class TrustManager:
         if not tool_meta:
             return self._mismatch(
                 "tool_meta_missing",
-                "Pass context={'tool': {'server_id': ..., 'schema_hash': ..., "
-                "'description_hash': ...}} to PolicyEngine.evaluate().",
+                "Pass context={'tool': ToolMetadata(...)} to PolicyEngine.evaluate().",
+            )
+        if isinstance(tool_meta, dict):
+            try:
+                tool_meta = ToolMetadata(
+                    server_id=tool_meta.get("server_id", ""),
+                    schema_hash=tool_meta.get("schema_hash", ""),
+                    description_hash=tool_meta.get("description_hash", ""),
+                )
+            except ValueError as exc:
+                return self._mismatch("tool_meta_invalid", str(exc))
+        if not isinstance(tool_meta, ToolMetadata):
+            return self._mismatch(
+                "tool_meta_untrusted",
+                "Tool metadata must be a ToolMetadata instance from a trusted registry.",
             )
 
-        server_id = tool_meta.get("server_id", "")
-        schema_hash = tool_meta.get("schema_hash", "")
-        description_hash = tool_meta.get("description_hash", "")
+        server_id = tool_meta.server_id
+        schema_hash = tool_meta.schema_hash
+        description_hash = tool_meta.description_hash
         nfkc_name = nfkc(tool_name)
         key = (server_id, nfkc_name)
+
+        if self._config.detect_nfkc and tool_name != nfkc_name:
+            return self._mismatch(
+                "tool_shadow_detected",
+                f"Name '{tool_name}' is not NFKC-normalized.",
+            )
 
         # 1. Shadowing check — compare against every approved name for this server.
         if self._config.detect_confusables or self._config.detect_nfkc:

@@ -7,6 +7,7 @@ import textwrap
 import pytest
 
 from policyforge.decorators import (
+    PolicyArgumentBindingError,
     PolicyDeniedError,
     PolicyGateWrapper,
     _bind_positional_args,
@@ -254,21 +255,20 @@ class TestMethodBinding:
 
 
 class TestBindPositionalArgsFallback:
-    def test_returns_kwargs_when_bind_fails(self):
-        """When sig.bind raises TypeError, fall back to kwargs only."""
+    def test_raises_when_bind_fails(self):
+        """Binding failures must fail closed instead of hiding positional args."""
         import inspect
 
         def func(a: int) -> int:
             return a
 
         sig = inspect.signature(func)
-        # Pass wrong number of positional args — bind should fail
-        result = _bind_positional_args(sig, (1, 2, 3), {"extra": "kw"})
-        assert result == {"extra": "kw"}
+        with pytest.raises(PolicyArgumentBindingError):
+            _bind_positional_args(sig, (1, 2, 3), {"extra": "kw"})
 
-    def test_returns_kwargs_when_sig_is_none(self):
-        result = _bind_positional_args(None, (1, 2), {"a": 1})
-        assert result == {"a": 1}
+    def test_raises_when_sig_is_none_and_positional_args_present(self):
+        with pytest.raises(PolicyArgumentBindingError):
+            _bind_positional_args(None, (1, 2), {"a": 1})
 
     def test_returns_kwargs_when_no_positional_args(self):
         import inspect
@@ -286,3 +286,36 @@ class TestSignatureFailureFallback:
         """Wrapping a C builtin (no inspectable signature) should still gate."""
         wrapped = policy_gate(engine, tool_name="safe_builtin")(len)
         assert wrapped([1, 2, 3]) == 3
+
+    def test_uninspectable_callable_with_positional_args_denied(self, tmp_path, monkeypatch):
+        (tmp_path / "p.yaml").write_text(
+            textwrap.dedent(
+                """\
+            name: path-policy
+            default_verdict: ALLOW
+            rules:
+              - name: block-sensitive-path
+                verdict: DENY
+                conditions:
+                  - field: args.path
+                    operator: eq
+                    value: /etc/shadow
+        """
+            )
+        )
+        engine = PolicyEngine(policy_paths=[tmp_path])
+
+        def target(path: str) -> str:
+            return f"executed:{path}"
+
+        monkeypatch.setattr(
+            "policyforge.decorators.inspect.signature",
+            lambda _func: (_ for _ in ()).throw(ValueError("no signature")),
+        )
+        wrapped = policy_gate(engine, tool_name="read_file")(target)
+
+        with pytest.raises(PolicyDeniedError) as exc_info:
+            wrapped("/etc/shadow")
+
+        assert exc_info.value.decision.verdict == Verdict.DENY
+        assert exc_info.value.decision.matched_rule == "argument_binding_failed"

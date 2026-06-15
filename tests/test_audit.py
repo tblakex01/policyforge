@@ -208,7 +208,7 @@ class TestAuditLogger:
             message="Shell blocked",
             evaluation_ms=1.25,
         )
-        legacy_entry.integrity_hash = legacy_entry.compute_integrity(
+        legacy_entry.integrity_hash = legacy_entry.compute_legacy_integrity(
             b"test-audit-key",
             include_event_fields=False,
         )
@@ -232,6 +232,47 @@ class TestAuditLogger:
 
         assert valid == 1
         assert tampered == 0
+
+    def test_rejects_ambiguous_legacy_pipe_payload(self, tmp_path):
+        audit = AuditLogger(log_dir=tmp_path, hmac_key="test-audit-key")
+        log_file = Path(audit._current_file)
+
+        legacy_entry = AuditEntry(
+            timestamp=123.0,
+            request_id="req-1",
+            tool_name="tool|agent-a",
+            agent_id="args-hash",
+            args_hash="ALLOW",
+            verdict="rule",
+            matched_rule="policy",
+            policy_name="message",
+            message="1.25",
+            evaluation_ms=0.0,
+        )
+        legacy_entry.integrity_hash = legacy_entry.compute_legacy_integrity(
+            b"test-audit-key",
+            include_event_fields=False,
+        )
+        record = {
+            "ts": legacy_entry.timestamp,
+            "rid": legacy_entry.request_id,
+            "tool": legacy_entry.tool_name,
+            "agent": legacy_entry.agent_id,
+            "args_hash": legacy_entry.args_hash,
+            "verdict": legacy_entry.verdict,
+            "rule": legacy_entry.matched_rule,
+            "policy": legacy_entry.policy_name,
+            "msg": legacy_entry.message,
+            "ms": legacy_entry.evaluation_ms,
+            "hmac": legacy_entry.integrity_hash,
+            "chain_prev": legacy_entry.chain_prev,
+        }
+        log_file.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+        valid, tampered = audit.verify_log()
+
+        assert valid == 0
+        assert tampered == 1
 
 
 class TestLogRotation:

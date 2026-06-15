@@ -21,6 +21,10 @@ logger = logging.getLogger(__name__)
 F = TypeVar("F", bound=Callable[..., Any])
 
 
+class PolicyArgumentBindingError(Exception):
+    """Raised when positional arguments cannot be represented for policy checks."""
+
+
 class PolicyDeniedError(Exception):
     """Raised when a tool call is denied by the policy engine."""
 
@@ -38,14 +42,32 @@ def _bind_positional_args(
     kwargs: dict[str, Any],
 ) -> dict[str, Any]:
     """Map positional args to their parameter names for policy evaluation."""
-    if not args or sig is None:
+    if not args:
         return kwargs
+    if sig is None:
+        raise PolicyArgumentBindingError(
+            "Cannot safely bind positional arguments for policy evaluation."
+        )
     try:
         bound = sig.bind(*args, **kwargs)
         bound.apply_defaults()
         return dict(bound.arguments)
-    except (TypeError, ValueError):
-        return kwargs
+    except (TypeError, ValueError) as exc:
+        raise PolicyArgumentBindingError(
+            "Cannot safely bind positional arguments for policy evaluation."
+        ) from exc
+
+
+def _deny_unbound_arguments(tool_name: str, exc: PolicyArgumentBindingError) -> None:
+    raise PolicyDeniedError(
+        Decision(
+            verdict=Verdict.DENY,
+            matched_rule="argument_binding_failed",
+            policy_name="policy_gate",
+            message=str(exc),
+            tool_name=tool_name,
+        )
+    ) from exc
 
 
 def policy_gate(
@@ -87,9 +109,13 @@ def policy_gate(
 
             @functools.wraps(func)
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                try:
+                    bound_args = _bind_positional_args(cached_sig, args, kwargs)
+                except PolicyArgumentBindingError as exc:
+                    _deny_unbound_arguments(resolved_name, exc)
                 decision = engine.evaluate(
                     tool_name=resolved_name,
-                    args=_bind_positional_args(cached_sig, args, kwargs),
+                    args=bound_args,
                     context=extra_context,
                 )
                 _enforce(decision, resolved_name)
@@ -99,9 +125,13 @@ def policy_gate(
 
         @functools.wraps(func)
         def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+            try:
+                bound_args = _bind_positional_args(cached_sig, args, kwargs)
+            except PolicyArgumentBindingError as exc:
+                _deny_unbound_arguments(resolved_name, exc)
             decision = engine.evaluate(
                 tool_name=resolved_name,
-                args=_bind_positional_args(cached_sig, args, kwargs),
+                args=bound_args,
                 context=extra_context,
             )
             _enforce(decision, resolved_name)

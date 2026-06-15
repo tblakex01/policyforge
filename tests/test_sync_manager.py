@@ -236,6 +236,28 @@ class TestSyncManagerFailures:
         assert results[0].success is False
         assert any("Unsafe" in e for e in results[0].errors)
 
+    def test_pull_rejects_prefix_stripped_absolute_remote_key(self, tmp_path):
+        provider = FakeSyncProvider([{"key": "policies//tmp/escape.yaml", "size": 1}])
+        manager = SyncManager(local_dir=tmp_path)
+        manager.add_provider(provider)
+
+        results = manager.pull()
+
+        assert results[0].success is False
+        assert any("Unsafe" in e for e in results[0].errors)
+        assert provider.download_calls == []
+
+    def test_pull_rejects_windows_drive_qualified_remote_key(self, tmp_path):
+        provider = FakeSyncProvider([{"key": "policies/D:/escape/policy.yaml", "size": 1}])
+        manager = SyncManager(local_dir=tmp_path)
+        manager.add_provider(provider)
+
+        results = manager.pull()
+
+        assert results[0].success is False
+        assert any("Unsafe" in e for e in results[0].errors)
+        assert provider.download_calls == []
+
     def test_push_handles_list_remote_failure(self, tmp_path):
         provider = FailingListProvider([])
         manager = SyncManager(local_dir=tmp_path)

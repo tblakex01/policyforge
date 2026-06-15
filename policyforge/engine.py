@@ -21,7 +21,7 @@ from policyforge.models import (
     Verdict,
 )
 from policyforge.trust.manager import TrustManager
-from policyforge.trust.models import TrustVerdict
+from policyforge.trust.models import ToolMetadata, TrustMode, TrustVerdict
 
 logger = logging.getLogger(__name__)
 
@@ -276,11 +276,28 @@ class PolicyEngine:
         or None to continue with regular evaluation.
         """
         if self._trust is None:
+            trust_cfg = getattr(self._loader, "trust_config", None)
+            if trust_cfg is not None and trust_cfg.mode != TrustMode.DISABLED:
+                verdict = Verdict.LOG_ONLY if trust_cfg.mode == TrustMode.WARN else Verdict.DENY
+                return Decision(
+                    verdict=verdict,
+                    matched_rule="tool_trust_unwired",
+                    policy_name="tool_trust",
+                    message=(
+                        "tool_trust is configured in policy YAML, but no TrustManager "
+                        "was passed to PolicyEngine."
+                    ),
+                )
             return None
-        result = self._trust.check(
-            tool_name=tool_name,
-            tool_meta=context.get("tool"),
-        )
+        tool_meta = context.get("tool")
+        if not isinstance(tool_meta, ToolMetadata):
+            return Decision(
+                verdict=Verdict.DENY,
+                matched_rule="tool_meta_untrusted",
+                policy_name="tool_trust",
+                message="Tool metadata must be a ToolMetadata instance from a trusted registry.",
+            )
+        result = self._trust.check(tool_name=tool_name, tool_meta=tool_meta)
         if result.verdict == TrustVerdict.ALLOW:
             return None
         verdict = Verdict.DENY if result.verdict == TrustVerdict.DENY else Verdict.LOG_ONLY
@@ -382,7 +399,12 @@ class PolicyEngine:
 
     def _handle_eval_error(self, policy: Policy, exc: Exception) -> Decision:
         """Apply the policy's fail_mode when evaluation throws."""
-        logger.error("Policy '%s' evaluation error: %s", policy.name, exc, exc_info=True)
+        logger.error(
+            "Policy '%s' evaluation error type=%s; applying fail_mode=%s.",
+            policy.name,
+            type(exc).__name__,
+            policy.fail_mode.value,
+        )
 
         if policy.fail_mode == FailMode.CLOSED:
             return Decision(

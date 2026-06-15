@@ -7,6 +7,7 @@ import pytest
 
 from policyforge.trust.models import (
     ToolFingerprint,
+    ToolMetadata,
     TrustConfig,
     TrustMode,
     TrustResult,
@@ -32,6 +33,18 @@ class TestToolFingerprint:
         a = ToolFingerprint("s", "n", "e" * 64, "f" * 64, 1.0, "op")
         b = ToolFingerprint("s", "n", "e" * 64, "f" * 64, 1.0, "op")
         assert a == b
+
+
+class TestToolMetadata:
+    def test_validates_hashes(self):
+        meta = ToolMetadata(
+            server_id="mcp://github", schema_hash="a" * 64, description_hash="b" * 64
+        )
+        assert meta.server_id == "mcp://github"
+
+    def test_rejects_missing_server(self):
+        with pytest.raises(ValueError, match="server_id"):
+            ToolMetadata(server_id="", schema_hash="a" * 64, description_hash="b" * 64)
 
 
 class TestCanonicalSchemaHash:

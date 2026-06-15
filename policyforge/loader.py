@@ -272,7 +272,7 @@ class PolicyLoader:
                 try:
                     policies.extend(self.load_file(yaml_file))
                 except (PolicyValidationError, yaml.YAMLError, ValueError) as exc:
-                    logger.error("Skipping invalid policy file %s: %s", yaml_file, exc)
+                    raise PolicyValidationError(f"Invalid policy file {yaml_file}: {exc}") from exc
 
         logger.info("Loaded %d policies from %s", len(policies), path)
         return policies
