@@ -90,6 +90,20 @@ class TestLoadFile:
         with pytest.raises(PolicyValidationError, match="missing keys"):
             loader.load_file(bad)
 
+    def test_condition_missing_required_key(self, loader, tmp_path):
+        bad = tmp_path / "bad.yaml"
+        bad.write_text(textwrap.dedent("""\
+            name: bad-policy
+            rules:
+              - name: bad-rule
+                conditions:
+                  - field: tool_name
+                    operator: eq
+        """))
+
+        with pytest.raises(PolicyValidationError, match="Condition.*missing keys.*value"):
+            loader.load_file(bad)
+
     def test_empty_conditions_list(self, loader, tmp_path):
         bad = tmp_path / "bad.yaml"
         bad.write_text(textwrap.dedent("""\
@@ -324,6 +338,11 @@ class TestLoadTrustConfig:
     def test_unknown_mode_rejected(self):
         with pytest.raises(PolicyValidationError, match="mode"):
             load_trust_config({"mode": "bogus"})
+
+    @pytest.mark.parametrize("field", ["on_mismatch", "on_unknown"])
+    def test_invalid_verdict_rejected(self, field):
+        with pytest.raises(PolicyValidationError, match="invalid verdict"):
+            load_trust_config({field: "BLOCK"})
 
     def test_unknown_top_level_key_rejected(self):
         with pytest.raises(PolicyValidationError, match="unknown"):

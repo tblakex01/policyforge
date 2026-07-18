@@ -291,3 +291,22 @@ class TestSignatureFailureFallback:
 
         assert exc_info.value.decision.verdict == Verdict.DENY
         assert exc_info.value.decision.matched_rule == "argument_binding_failed"
+
+    @pytest.mark.asyncio
+    async def test_uninspectable_async_callable_with_positional_args_denied(
+        self, engine, monkeypatch
+    ):
+        async def target(value: str) -> str:
+            return f"executed:{value}"
+
+        monkeypatch.setattr(
+            "policyforge.decorators.inspect.signature",
+            lambda _func: (_ for _ in ()).throw(ValueError("no signature")),
+        )
+        wrapped = policy_gate(engine, tool_name="async_tool")(target)
+
+        with pytest.raises(PolicyDeniedError) as exc_info:
+            await wrapped("sensitive-value")
+
+        assert exc_info.value.decision.verdict == Verdict.DENY
+        assert exc_info.value.decision.matched_rule == "argument_binding_failed"
