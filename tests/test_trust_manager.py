@@ -216,6 +216,16 @@ class TestTrustManagerMissingMeta:
         assert result.verdict == TrustVerdict.DENY
         assert result.reason == "tool_meta_missing"
 
+    def test_untrusted_tool_meta_object_denies_in_enforce(self, ledger_path):
+        ledger_path.touch()
+        cfg = TrustConfig(mode=TrustMode.ENFORCE, ledger_path=ledger_path)
+        tm = TrustManager(cfg, hmac_key="k")
+
+        result = tm.check(tool_name="x", tool_meta=object())  # type: ignore[arg-type]
+
+        assert result.verdict == TrustVerdict.DENY
+        assert result.reason == "tool_meta_untrusted"
+
 
 class TestTrustManagerAutoApproveInvalid:
     def test_auto_approve_with_invalid_meta_denies_not_crashes(self, ledger_path):

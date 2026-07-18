@@ -33,9 +33,10 @@ class TestCondition:
         with pytest.raises(ValueError, match="Invalid regex"):
             Condition(field="x", operator="regex", value="(unclosed")
 
-    def test_nested_quantifier_regex_rejected(self):
+    @pytest.mark.parametrize("pattern", [r"^(a+)+$", r"^(a+){2}$", r"^(a{1,3})+$"])
+    def test_nested_quantifier_regex_rejected(self, pattern):
         with pytest.raises(ValueError, match="Unsafe regex"):
-            Condition(field="x", operator="regex", value=r"^(a+)+$")
+            Condition(field="x", operator="regex", value=pattern)
 
     def test_long_regex_input_rejected(self):
         c = Condition(field="x", operator="regex", value=r"^a+$")
@@ -159,6 +160,20 @@ class TestAuditEntry:
         h_decision = decision_entry.compute_integrity(key)
         h_event = event_entry.compute_integrity(key)
         assert h_decision != h_event
+
+    def test_legacy_event_integrity_remains_verifiable(self):
+        key = b"legacy-test-key"
+        entry = AuditEntry(
+            timestamp=100.0,
+            request_id="event-id",
+            tool_name="share_receipt",
+            entry_type="event",
+            event_type="share_receipt_generated",
+            metadata={"format": "markdown"},
+        )
+        entry.integrity_hash = entry.compute_legacy_integrity(key)
+
+        assert entry.verify(key) is True
 
 
 class TestDecisionShareMarkdown:

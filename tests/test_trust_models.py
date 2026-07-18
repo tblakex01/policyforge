@@ -46,6 +46,14 @@ class TestToolMetadata:
         with pytest.raises(ValueError, match="server_id"):
             ToolMetadata(server_id="", schema_hash="a" * 64, description_hash="b" * 64)
 
+    def test_rejects_non_hex_hash(self):
+        with pytest.raises(ValueError, match="schema_hash must be hex"):
+            ToolMetadata(
+                server_id="mcp://github",
+                schema_hash="z" * 64,
+                description_hash="b" * 64,
+            )
+
 
 class TestCanonicalSchemaHash:
     def test_stable_across_key_order(self):

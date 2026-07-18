@@ -210,6 +210,30 @@ policies:
         assert decision.verdict == Verdict.DENY
         assert decision.matched_rule == "tool_trust_unwired"
 
+    def test_orphaned_trust_config_warns_only_once(self, tmp_path, caplog):
+        import logging
+
+        policy_yaml = tmp_path / "p.yaml"
+        policy_yaml.write_text(
+            """
+tool_trust:
+  mode: enforce
+name: demo
+default_verdict: ALLOW
+""",
+            encoding="utf-8",
+        )
+
+        with caplog.at_level(logging.WARNING, logger="policyforge.engine"):
+            engine = PolicyEngine()
+            engine.load(policy_yaml)
+            engine.load(policy_yaml)
+
+        warnings = [
+            record for record in caplog.records if "no TrustManager was passed" in record.message
+        ]
+        assert len(warnings) == 1
+
     def test_no_warning_when_trust_manager_present(self, tmp_path, ledger_path, caplog):
         import logging
 
