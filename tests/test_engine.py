@@ -1,13 +1,16 @@
 """Tests for the policy evaluation engine."""
 
 import json
+import logging
 import textwrap
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from policyforge.audit import AuditLogger
 from policyforge.engine import PolicyEngine, _hash_args, _resolve_field
+from policyforge.loader import PolicyValidationError
 from policyforge.models import Verdict
 
 
@@ -311,6 +314,43 @@ class TestFailClosed:
         assert "sk-live-secret-value" not in caplog.text
 
 
+class TestRegexInputBound:
+    _POLICY = textwrap.dedent("""\
+        name: regex-policy
+        fail_mode: {fail_mode}
+        default_verdict: ALLOW
+        rules:
+          - name: block-rm
+            verdict: DENY
+            conditions:
+              - field: args.cmd
+                operator: regex
+                value: "rm -rf"
+    """)
+
+    @pytest.mark.parametrize("fail_mode", ["open", "log", "closed"])
+    def test_oversized_regex_input_denies_regardless_of_fail_mode(self, tmp_path, fail_mode):
+        """Padding an argument past the regex bound must not bypass a DENY rule."""
+        (tmp_path / "p.yaml").write_text(self._POLICY.format(fail_mode=fail_mode))
+        engine = PolicyEngine(policy_paths=[tmp_path])
+
+        assert engine.evaluate("sh", {"cmd": "rm -rf /"}).verdict == Verdict.DENY
+
+        padded = engine.evaluate("sh", {"cmd": "x" * 5000 + " rm -rf /"})
+        assert padded.verdict == Verdict.DENY
+        assert padded.matched_rule == "regex_input_too_large"
+        assert padded.policy_name == "regex-policy"
+        assert "rm -rf" not in padded.message
+
+    def test_oversized_input_logs_policy_but_not_payload(self, tmp_path, caplog):
+        (tmp_path / "p.yaml").write_text(self._POLICY.format(fail_mode="open"))
+        engine = PolicyEngine(policy_paths=[tmp_path])
+        with caplog.at_level(logging.ERROR, logger="policyforge.engine"):
+            engine.evaluate("sh", {"cmd": "sk-secret-" * 1000})
+        assert "regex-policy" in caplog.text
+        assert "sk-secret" not in caplog.text
+
+
 class TestFailOpen:
     def test_fail_open_policy(self, tmp_path):
         """A condition that errors at evaluation time → fail-open."""
@@ -436,6 +476,70 @@ class TestReload:
         """))
         engine.reload([tmp_path])
         assert engine.policies[0].name == "v2"
+
+    def test_failed_reload_keeps_previous_policies(self, tmp_path):
+        (tmp_path / "v1.yaml").write_text(textwrap.dedent("""\
+            name: v1
+            default_verdict: ALLOW
+            rules: []
+        """))
+        engine = PolicyEngine(policy_paths=[tmp_path])
+        assert engine.evaluate("x").verdict == Verdict.ALLOW
+
+        (tmp_path / "v1.yaml").write_text("name: broken\nrules: 3\n")
+        with pytest.raises(PolicyValidationError):
+            engine.reload([tmp_path])
+
+        assert [p.name for p in engine.policies] == ["v1"]
+        assert engine.evaluate("x").verdict == Verdict.ALLOW
+
+    def test_concurrent_reload_never_exposes_empty_engine(self, tmp_path):
+        """Readers must see either the old or the new policy set, never neither."""
+        for i in range(5):
+            (tmp_path / f"p{i:02d}.yaml").write_text(textwrap.dedent(f"""\
+                name: p{i}
+                default_verdict: ALLOW
+                rules: []
+            """))
+        engine = PolicyEngine(policy_paths=[tmp_path])
+
+        stop = threading.Event()
+        spurious: list[str] = []
+
+        def reader() -> None:
+            while not stop.is_set():
+                decision = engine.evaluate("x")
+                if decision.verdict != Verdict.ALLOW:
+                    spurious.append(decision.message)
+
+        threads = [threading.Thread(target=reader) for _ in range(2)]
+        for t in threads:
+            t.start()
+        try:
+            for _ in range(20):
+                engine.reload([tmp_path])
+        finally:
+            stop.set()
+            for t in threads:
+                t.join()
+
+        assert spurious == []
+        assert len(engine.policies) == 5
+
+    def test_reload_drops_stale_trust_config(self, tmp_path):
+        """Removing tool_trust from YAML and reloading must stop the unwired-trust DENY."""
+        policy = textwrap.dedent("""\
+            name: p
+            default_verdict: ALLOW
+            rules: []
+        """)
+        (tmp_path / "p.yaml").write_text("tool_trust:\n  mode: enforce\n" + policy)
+        engine = PolicyEngine(policy_paths=[tmp_path])
+        assert engine.evaluate("x").matched_rule == "tool_trust_unwired"
+
+        (tmp_path / "p.yaml").write_text(policy)
+        engine.reload([tmp_path])
+        assert engine.evaluate("x").verdict == Verdict.ALLOW
 
 
 class TestExtraContext:

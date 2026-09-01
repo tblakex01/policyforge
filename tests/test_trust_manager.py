@@ -1,10 +1,11 @@
 """Tests for the TrustManager orchestrator."""
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
-from policyforge.trust.ledger import LedgerWriter
+from policyforge.trust.ledger import LedgerReader, LedgerWriter
 from policyforge.trust.manager import TrustManager
 from policyforge.trust.models import (
     ToolFingerprint,
@@ -284,3 +285,33 @@ class TestTrustManagerShadowFlags:
             },
         )
         assert result.reason != "tool_shadow_detected"
+
+
+class TestTrustManagerConcurrency:
+    def test_concurrent_auto_approve_is_safe(self, ledger_path):
+        """Auto-approving from many threads must not corrupt the approved set or ledger."""
+        cfg = TrustConfig(mode=TrustMode.ENFORCE, ledger_path=ledger_path, auto_approve=True)
+        tm = TrustManager(cfg, hmac_key="k")
+        names = [f"tool_{i:03d}" for i in range(200)]
+
+        def approve(name: str) -> TrustVerdict:
+            return tm.check(
+                tool_name=name,
+                tool_meta={
+                    "server_id": "mcp://x",
+                    "schema_hash": "1" * 64,
+                    "description_hash": "2" * 64,
+                },
+            ).verdict
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            verdicts = list(pool.map(approve, names * 3))
+
+        assert set(verdicts) == {TrustVerdict.ALLOW}
+        pinned = LedgerReader(path=ledger_path, hmac_key="k").load()
+        assert {n for _, n in pinned} == set(names)
+        # Every name was pinned exactly once despite repeated concurrent calls.
+        entries = [ln for ln in ledger_path.read_text(encoding="utf-8").splitlines() if ln]
+        assert len(entries) == len(names)
+        # A fresh writer re-verifies the whole chain; a corrupted ledger would raise.
+        LedgerWriter(path=ledger_path, hmac_key="k")

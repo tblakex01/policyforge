@@ -324,3 +324,64 @@ class TestTrustAudit:
         valid, tampered = audit.verify_log(files[0])
         assert tampered == 0
         assert valid == len(lines)
+
+
+class TestTrustPreflightErrors:
+    def _engine(self, policy_file, ledger_path, tmp_path, monkeypatch):
+        monkeypatch.setenv("POLICYFORGE_HMAC_KEY", "k")
+        from policyforge.audit import AuditLogger
+
+        ledger_path.touch()
+        audit = AuditLogger(log_dir=tmp_path / "audit")
+        tm = TrustManager(
+            TrustConfig(mode=TrustMode.ENFORCE, ledger_path=ledger_path, auto_approve=True),
+            hmac_key="k",
+        )
+        return (
+            PolicyEngine(policy_paths=[policy_file], trust_manager=tm, audit_logger=audit),
+            audit,
+        )
+
+    def test_ledger_write_failure_fails_closed_with_audit(
+        self, policy_file, ledger_path, tmp_path, monkeypatch
+    ):
+        """An OSError from the approvals ledger must become a DENY, not an exception."""
+        engine, audit = self._engine(policy_file, ledger_path, tmp_path, monkeypatch)
+
+        def boom(self, fp):  # noqa: ARG001
+            raise OSError("read-only file system")
+
+        monkeypatch.setattr(LedgerWriter, "append", boom)
+
+        decision = engine.evaluate(
+            tool_name="new_tool",
+            args={},
+            context=_tool_context("mcp://x", "5" * 64, "7" * 64),
+        )
+        assert decision.verdict == Verdict.DENY
+        assert decision.matched_rule == "tool_trust_error"
+        assert decision.policy_name == "tool_trust"
+        assert "read-only" not in decision.message
+
+        audit_file = next((tmp_path / "audit").glob("*.jsonl"))
+        last = audit_file.read_text(encoding="utf-8").splitlines()[-1]
+        assert '"rule":"tool_trust_error"' in last
+        assert audit.verify_log(audit_file) == (1, 0)
+
+    def test_arbitrary_preflight_exception_fails_closed(
+        self, policy_file, ledger_path, tmp_path, monkeypatch
+    ):
+        engine, _ = self._engine(policy_file, ledger_path, tmp_path, monkeypatch)
+
+        def boom(self, **kwargs):  # noqa: ARG001
+            raise RuntimeError("dictionary changed size during iteration")
+
+        monkeypatch.setattr(TrustManager, "check", boom)
+
+        decision = engine.evaluate(
+            tool_name="t",
+            args={},
+            context=_tool_context("mcp://x", "5" * 64, "7" * 64),
+        )
+        assert decision.verdict == Verdict.DENY
+        assert decision.matched_rule == "tool_trust_error"

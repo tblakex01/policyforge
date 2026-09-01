@@ -18,6 +18,7 @@ from policyforge.models import (
     MatchStrategy,
     Policy,
     PolicyRule,
+    RegexInputTooLargeError,
     Verdict,
 )
 from policyforge.trust.manager import TrustManager
@@ -132,6 +133,7 @@ class PolicyEngine:
         self._audit = audit_logger
         self._agent_id = agent_id
         self._trust = trust_manager
+        self._trust_warning_emitted = False
 
         if policy_paths:
             for p in policy_paths:
@@ -152,10 +154,27 @@ class PolicyEngine:
         self._warn_if_trust_config_orphaned()
 
     def reload(self, policy_paths: list[str | Path]) -> None:
-        """Replace all policies with a fresh load from the given paths."""
-        self._policies.clear()
+        """Replace all policies with a fresh load from the given paths.
+
+        The new policy set (and its ``tool_trust`` config) is built fully
+        before being swapped in, so concurrent ``evaluate`` calls never
+        observe an empty engine, and a load failure leaves the previous
+        policies untouched.
+        """
+        loader = PolicyLoader()
+        fresh: list[Policy] = []
         for p in policy_paths:
-            self.load(p)
+            path = Path(p)
+            if path.is_dir():
+                fresh.extend(loader.load_directory(path))
+            else:
+                fresh.extend(loader.load_file(path))
+
+        # Single reference swap: readers see either the old or the new set.
+        self._loader = loader
+        self._policies = fresh
+        self._trust_warning_emitted = False
+        self._warn_if_trust_config_orphaned()
         logger.info("Reloaded %d policies", len(self._policies))
 
     def evaluate(
@@ -190,7 +209,22 @@ class PolicyEngine:
         }
 
         start = time.perf_counter()
-        trust_decision = self._preflight_trust(tool_name, eval_context)
+        try:
+            trust_decision = self._preflight_trust(tool_name, eval_context)
+        except Exception as exc:
+            # Ledger I/O errors, concurrent-mutation errors, etc. must never
+            # escape evaluate(): fail closed and leave an audit trail.
+            logger.error(
+                "Trust pre-flight error type=%s for tool=%s; failing closed.",
+                type(exc).__name__,
+                tool_name,
+            )
+            trust_decision = Decision(
+                verdict=Verdict.DENY,
+                matched_rule="tool_trust_error",
+                policy_name="tool_trust",
+                message="Trust pre-flight failed — fail-closed.",
+            )
         if trust_decision is not None:
             decision = trust_decision
         else:
@@ -251,16 +285,14 @@ class PolicyEngine:
         ``tool_trust.mode: enforce`` in YAML expecting the engine to enforce,
         but forgot to construct a TrustManager with ``PolicyEngine(trust_manager=...)``.
         """
-        from policyforge.trust.models import TrustMode
-
-        trust_cfg = getattr(self._loader, "trust_config", None)
+        trust_cfg = self._loader.trust_config
         if trust_cfg is None:
             return
         if trust_cfg.mode == TrustMode.DISABLED:
             return
         if self._trust is not None:
             return
-        if getattr(self, "_trust_warning_emitted", False):
+        if self._trust_warning_emitted:
             return
         logger.warning(
             "tool_trust.mode=%s configured in YAML but no TrustManager was "
@@ -276,7 +308,7 @@ class PolicyEngine:
         or None to continue with regular evaluation.
         """
         if self._trust is None:
-            trust_cfg = getattr(self._loader, "trust_config", None)
+            trust_cfg = self._loader.trust_config
             if trust_cfg is not None and trust_cfg.mode != TrustMode.DISABLED:
                 verdict = Verdict.LOG_ONLY if trust_cfg.mode == TrustMode.WARN else Verdict.DENY
                 return Decision(
@@ -325,6 +357,21 @@ class PolicyEngine:
         for policy in active_policies:
             try:
                 decision = self._evaluate_policy(policy, context)
+            except RegexInputTooLargeError:
+                # Input size is caller-controlled; honoring fail_mode=open here
+                # would let an agent bypass regex DENY rules by padding an arg.
+                logger.error(
+                    "Policy '%s': regex input exceeds safety bound for tool=%s; "
+                    "denying regardless of fail_mode.",
+                    policy.name,
+                    context.get("tool_name"),
+                )
+                return Decision(
+                    verdict=Verdict.DENY,
+                    matched_rule="regex_input_too_large",
+                    policy_name=policy.name,
+                    message="Regex input exceeds safety bound — fail-closed.",
+                )
             except Exception as exc:
                 decision = self._handle_eval_error(policy, exc)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable
 
@@ -55,6 +56,9 @@ class TrustManager:
         self._config = config
         self._approved_by = approved_by
         self._now = now
+        # Guards the approved-set scan and auto-approve mutation so a
+        # concurrent auto-approve cannot mutate the dict mid-iteration.
+        self._lock = threading.Lock()
         if config.mode != TrustMode.DISABLED:
             self._writer: LedgerWriter | None = LedgerWriter(
                 path=config.ledger_path, hmac_key=hmac_key
@@ -125,6 +129,21 @@ class TrustManager:
                 f"Name '{tool_name}' is not NFKC-normalized.",
             )
 
+        with self._lock:
+            return self._check_against_approved(
+                tool_name, nfkc_name, key, server_id, schema_hash, description_hash
+            )
+
+    def _check_against_approved(
+        self,
+        tool_name: str,
+        nfkc_name: str,
+        key: tuple[str, str],
+        server_id: str,
+        schema_hash: str,
+        description_hash: str,
+    ) -> TrustResult:
+        """Shadowing scan, ledger lookup and auto-approve. Caller holds ``_lock``."""
         # 1. Shadowing check — compare against every approved name for this server.
         if self._config.detect_confusables or self._config.detect_nfkc:
             incoming_canon = canonicalize(tool_name)
