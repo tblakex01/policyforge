@@ -526,6 +526,56 @@ class TestReload:
         assert spurious == []
         assert len(engine.policies) == 5
 
+    def test_concurrent_reload_never_mixes_trust_config_and_policies(self, tmp_path):
+        """A reader must never pair one reload's tool_trust config with another's policies.
+
+        State A: tool_trust enforce (unwired) + policy "a" with default DENY.
+        State B: no tool_trust + policy "b" with default ALLOW.
+        Consistent reads yield either the unwired-trust DENY (state A, or A's
+        trust config paired with B's policies) or an ALLOW (state B). A DENY
+        attributed to policy "a" can only come from a torn read: B's trust
+        config paired with A's policies.
+        """
+        state_a = textwrap.dedent("""\
+            tool_trust:
+              mode: enforce
+            name: a
+            default_verdict: DENY
+            rules: []
+        """)
+        state_b = textwrap.dedent("""\
+            name: b
+            default_verdict: ALLOW
+            rules: []
+        """)
+        policy = tmp_path / "p.yaml"
+        policy.write_text(state_a)
+        engine = PolicyEngine(policy_paths=[tmp_path])
+
+        stop = threading.Event()
+        torn: list[str] = []
+
+        def reader() -> None:
+            while not stop.is_set():
+                d = engine.evaluate("x")
+                consistent = d.matched_rule == "tool_trust_unwired" or d.verdict == Verdict.ALLOW
+                if not consistent:
+                    torn.append(f"{d.verdict.value}/{d.policy_name}/{d.matched_rule}")
+
+        threads = [threading.Thread(target=reader) for _ in range(2)]
+        for t in threads:
+            t.start()
+        try:
+            for i in range(30):
+                policy.write_text(state_b if i % 2 == 0 else state_a)
+                engine.reload([tmp_path])
+        finally:
+            stop.set()
+            for t in threads:
+                t.join()
+
+        assert torn == []
+
     def test_reload_drops_stale_trust_config(self, tmp_path):
         """Removing tool_trust from YAML and reloading must stop the unwired-trust DENY."""
         policy = textwrap.dedent("""\

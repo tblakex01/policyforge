@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -22,9 +23,23 @@ from policyforge.models import (
     Verdict,
 )
 from policyforge.trust.manager import TrustManager
-from policyforge.trust.models import ToolMetadata, TrustMode, TrustVerdict
+from policyforge.trust.models import ToolMetadata, TrustConfig, TrustMode, TrustVerdict
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _EngineState:
+    """Immutable snapshot of everything ``evaluate`` reads.
+
+    Policies and the YAML ``tool_trust`` config are bundled so that a reload
+    swaps both with one reference assignment. A concurrent ``evaluate`` reads
+    ``self._state`` once and therefore never pairs a new trust config with an
+    old policy list (or vice versa).
+    """
+
+    policies: tuple[Policy, ...] = ()
+    trust_config: TrustConfig | None = None
 
 
 def _resolve_field(context: dict[str, Any], dot_path: str) -> Any:
@@ -128,8 +143,7 @@ class PolicyEngine:
         agent_id: str = "default",
         trust_manager: TrustManager | None = None,
     ) -> None:
-        self._loader = PolicyLoader()
-        self._policies: list[Policy] = []
+        self._state = _EngineState()
         self._audit = audit_logger
         self._agent_id = agent_id
         self._trust = trust_manager
@@ -142,15 +156,28 @@ class PolicyEngine:
     @property
     def policies(self) -> list[Policy]:
         """Currently loaded policies (read-only view)."""
-        return list(self._policies)
+        return list(self._state.policies)
 
-    def load(self, path: str | Path) -> None:
-        """Load policies from a file or directory and append to the engine."""
+    @staticmethod
+    def _load_into(loader: PolicyLoader, path: str | Path) -> list[Policy]:
         path = Path(path)
         if path.is_dir():
-            self._policies.extend(self._loader.load_directory(path))
-        else:
-            self._policies.extend(self._loader.load_file(path))
+            return loader.load_directory(path)
+        return loader.load_file(path)
+
+    def load(self, path: str | Path) -> None:
+        """Load policies from a file or directory and append to the engine.
+
+        A ``tool_trust`` block in the newly loaded file replaces any previously
+        loaded one (the loader logs a warning when that happens).
+        """
+        loader = PolicyLoader()
+        loader.trust_config = self._state.trust_config
+        added = self._load_into(loader, path)
+        self._state = _EngineState(
+            policies=self._state.policies + tuple(added),
+            trust_config=loader.trust_config,
+        )
         self._warn_if_trust_config_orphaned()
 
     def reload(self, policy_paths: list[str | Path]) -> None:
@@ -164,18 +191,13 @@ class PolicyEngine:
         loader = PolicyLoader()
         fresh: list[Policy] = []
         for p in policy_paths:
-            path = Path(p)
-            if path.is_dir():
-                fresh.extend(loader.load_directory(path))
-            else:
-                fresh.extend(loader.load_file(path))
+            fresh.extend(self._load_into(loader, p))
 
-        # Single reference swap: readers see either the old or the new set.
-        self._loader = loader
-        self._policies = fresh
+        # Single reference swap: readers see either the old or the new state.
+        self._state = _EngineState(policies=tuple(fresh), trust_config=loader.trust_config)
         self._trust_warning_emitted = False
         self._warn_if_trust_config_orphaned()
-        logger.info("Reloaded %d policies", len(self._policies))
+        logger.info("Reloaded %d policies", len(fresh))
 
     def evaluate(
         self,
@@ -209,8 +231,9 @@ class PolicyEngine:
         }
 
         start = time.perf_counter()
+        state = self._state  # one snapshot for the whole evaluation
         try:
-            trust_decision = self._preflight_trust(tool_name, eval_context)
+            trust_decision = self._preflight_trust(tool_name, eval_context, state)
         except Exception as exc:
             # Ledger I/O errors, concurrent-mutation errors, etc. must never
             # escape evaluate(): fail closed and leave an audit trail.
@@ -228,7 +251,7 @@ class PolicyEngine:
         if trust_decision is not None:
             decision = trust_decision
         else:
-            decision = self._run_evaluation(eval_context)
+            decision = self._run_evaluation(eval_context, state)
         elapsed_ms = (time.perf_counter() - start) * 1000
         decision = Decision(
             verdict=decision.verdict,
@@ -285,7 +308,7 @@ class PolicyEngine:
         ``tool_trust.mode: enforce`` in YAML expecting the engine to enforce,
         but forgot to construct a TrustManager with ``PolicyEngine(trust_manager=...)``.
         """
-        trust_cfg = self._loader.trust_config
+        trust_cfg = self._state.trust_config
         if trust_cfg is None:
             return
         if trust_cfg.mode == TrustMode.DISABLED:
@@ -301,14 +324,16 @@ class PolicyEngine:
         )
         self._trust_warning_emitted = True
 
-    def _preflight_trust(self, tool_name: str, context: dict[str, Any]) -> Decision | None:
+    def _preflight_trust(
+        self, tool_name: str, context: dict[str, Any], state: _EngineState
+    ) -> Decision | None:
         """Run the trust manager before rule evaluation.
 
         Returns a DENY/LOG_ONLY decision to short-circuit the rule loop,
         or None to continue with regular evaluation.
         """
         if self._trust is None:
-            trust_cfg = self._loader.trust_config
+            trust_cfg = state.trust_config
             if trust_cfg is not None and trust_cfg.mode != TrustMode.DISABLED:
                 verdict = Verdict.LOG_ONLY if trust_cfg.mode == TrustMode.WARN else Verdict.DENY
                 return Decision(
@@ -340,9 +365,9 @@ class PolicyEngine:
             message=result.message,
         )
 
-    def _run_evaluation(self, context: dict[str, Any]) -> Decision:
+    def _run_evaluation(self, context: dict[str, Any], state: _EngineState) -> Decision:
         """Inner evaluation loop — separated for clean error handling."""
-        active_policies = [p for p in self._policies if p.enabled]
+        active_policies = [p for p in state.policies if p.enabled]
 
         if not active_policies:
             # No policies loaded → fail-closed by default
