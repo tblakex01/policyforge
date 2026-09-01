@@ -10,6 +10,7 @@ from policyforge.models import (
     FailMode,
     Policy,
     PolicyRule,
+    RegexInputTooLargeError,
     Verdict,
 )
 from policyforge.trust import (
@@ -36,6 +37,7 @@ __all__ = [
     "AuditLogger",
     "policy_gate",
     "PolicyGateWrapper",
+    "RegexInputTooLargeError",
     "ToolFingerprint",
     "ToolMetadata",
     "TrustConfig",

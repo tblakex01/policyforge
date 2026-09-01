@@ -36,6 +36,15 @@ class MatchStrategy(str, Enum):
     ANY = "any"  # at least one condition must match (OR)
 
 
+class RegexInputTooLargeError(ValueError):
+    """Raised when a regex condition receives input above the safety bound.
+
+    The engine treats this as a hard DENY regardless of the policy's
+    ``fail_mode``: the input size is caller-controlled, so a fail-open
+    policy must not be bypassable by padding an argument.
+    """
+
+
 @dataclass(frozen=True)
 class Condition:
     """Single predicate within a rule.
@@ -73,7 +82,9 @@ class Condition:
     def match_regex(self, actual: str) -> bool:
         """Test whether actual matches this condition's compiled regex pattern."""
         if len(actual) > self._MAX_REGEX_INPUT_CHARS:
-            raise ValueError(f"Regex input exceeds {self._MAX_REGEX_INPUT_CHARS} characters.")
+            raise RegexInputTooLargeError(
+                f"Regex input exceeds {self._MAX_REGEX_INPUT_CHARS} characters."
+            )
         compiled = getattr(self, "_compiled_re", None)
         if compiled is not None:
             return bool(compiled.search(actual))
