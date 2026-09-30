@@ -442,8 +442,9 @@ class TestEffectiveArgumentSecurity:
             return count
 
         protected = gate(tool)
-        with pytest.raises(PolicyDeniedError, match="collid"):
+        with pytest.raises(PolicyDeniedError) as exc_info:
             protected(count=5)
+        assert exc_info.value.decision.matched_rule == "argument_binding_failed"
         assert calls == []
         assert protected(5, label="safe") == 5
 
