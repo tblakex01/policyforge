@@ -310,3 +310,362 @@ class TestSignatureFailureFallback:
 
         assert exc_info.value.decision.verdict == Verdict.DENY
         assert exc_info.value.decision.matched_rule == "argument_binding_failed"
+
+
+@pytest.fixture
+def argument_engine(tmp_path):
+    (tmp_path / "arguments.yaml").write_text(textwrap.dedent("""\
+            name: argument-policy
+            default_verdict: ALLOW
+            rules:
+              - name: block-large-count
+                verdict: DENY
+                conditions:
+                  - field: args.count
+                    operator: gt
+                    value: 100
+            """))
+    return PolicyEngine(policy_paths=[tmp_path])
+
+
+@pytest.fixture(params=["decorator", "wrapper", "dict"])
+def gate(argument_engine, request):
+    def wrap(func):
+        if request.param == "decorator":
+            return policy_gate(argument_engine, tool_name="count_tool")(func)
+        wrapper = PolicyGateWrapper(argument_engine)
+        if request.param == "wrapper":
+            return wrapper.wrap(func, tool_name="count_tool")
+        return wrapper.wrap_dict({"count_tool": func})["count_tool"]
+
+    return wrap
+
+
+class TestEffectiveArgumentSecurity:
+    @pytest.mark.parametrize("call_form", ["omitted", "positional", "keyword"])
+    def test_defaults_and_explicit_values_are_denied(self, gate, call_form):
+        calls = []
+
+        def tool(count=101):
+            calls.append(count)
+            return count
+
+        protected = gate(tool)
+        with pytest.raises(PolicyDeniedError):
+            if call_form == "omitted":
+                protected()
+            elif call_form == "positional":
+                protected(101)
+            else:
+                protected(count=101)
+        assert calls == []
+        assert protected(5) == 5
+        assert protected(count=6) == 6
+        assert calls == [5, 6]
+
+    def test_keyword_only_defaults_are_denied(self, gate):
+        calls = []
+
+        def tool(*, count=101):
+            calls.append(count)
+            return count
+
+        protected = gate(tool)
+        with pytest.raises(PolicyDeniedError):
+            protected()
+        assert calls == []
+        assert protected(count=5) == 5
+
+    @pytest.mark.parametrize("with_positional", [False, True])
+    def test_variadic_keywords_are_denied_in_both_call_forms(self, gate, with_positional):
+        calls = []
+
+        def tool(label="test", **extras):
+            calls.append((label, extras))
+            return label, extras
+
+        protected = gate(tool)
+        args = ("label",) if with_positional else ()
+        with pytest.raises(PolicyDeniedError):
+            protected(*args, count=101)
+        assert calls == []
+        assert protected(*args, count=5) == (args[0] if args else "test", {"count": 5})
+
+    def test_async_defaults_and_variadic_keywords_are_denied(self, gate):
+        calls = []
+
+        async def default_tool(count=101):
+            calls.append(count)
+            return count
+
+        async def variadic_tool(label="test", **extras):
+            calls.append(extras["count"])
+            return label, extras
+
+        protected_default = gate(default_tool)
+        protected_variadic = gate(variadic_tool)
+        for call in (
+            protected_default,
+            lambda: protected_variadic(count=101),
+            lambda: protected_variadic("label", count=101),
+        ):
+            with pytest.raises(PolicyDeniedError):
+                asyncio.run(call())
+        assert calls == []
+        assert asyncio.run(protected_default(count=5)) == 5
+        assert asyncio.run(protected_variadic(count=6)) == ("test", {"count": 6})
+
+    def test_bound_method_and_callable_defaults_are_denied(self, gate):
+        calls = []
+
+        class Tool:
+            def run(self, count=101):
+                calls.append(count)
+                return count
+
+            def __call__(self, count=101):
+                return self.run(count)
+
+        tool = Tool()
+        for func in (tool.run, tool):
+            protected = gate(func)
+            with pytest.raises(PolicyDeniedError):
+                protected()
+            assert protected(count=5) == 5
+        assert calls == [5, 5]
+
+    def test_keyword_cannot_mask_positional_only_default(self, gate):
+        calls = []
+
+        def tool(count=101, /, **extras):
+            calls.append((count, extras))
+            return count
+
+        protected = gate(tool)
+        with pytest.raises(PolicyDeniedError, match="collid"):
+            protected(count=5)
+        assert calls == []
+        assert protected(5, label="safe") == 5
+
+    def test_variadic_container_name_cannot_mask_keyword_value(self, gate):
+        calls = []
+
+        def tool(**extras):
+            calls.append(extras)
+            return extras
+
+        protected = gate(tool)
+        with pytest.raises(PolicyDeniedError, match="collid"):
+            protected(extras=101)
+        assert calls == []
+        assert protected(count=5) == {"count": 5}
+
+    def test_uninspectable_callable_is_rejected_without_execution(self, gate):
+        calls = []
+
+        class OpaqueTool:
+            __signature__ = "unavailable"
+
+            def __call__(self, count=101):
+                calls.append(count)
+                return count
+
+        protected = gate(OpaqueTool())
+        with pytest.raises(PolicyDeniedError, match="inspectable signature"):
+            protected(count=5)
+        assert calls == []
+
+    def test_variadic_positional_names_cannot_hide_keywords(self, gate):
+        calls = []
+
+        def tool(*items, **extras):
+            calls.append((items, extras))
+            return items, extras
+
+        protected = gate(tool)
+        with pytest.raises(PolicyDeniedError, match="collid"):
+            protected(5, items=101)
+        assert calls == []
+        assert protected(5, 6, count=5) == ((5, 6), {"count": 5})
+
+    def test_partial_callable_defaults_are_denied(self, gate):
+        from functools import partial
+
+        calls = []
+
+        def tool(label, count):
+            calls.append((label, count))
+            return label, count
+
+        protected = gate(partial(tool, "label", count=101))
+        with pytest.raises(PolicyDeniedError):
+            protected()
+        assert calls == []
+        assert protected(count=5) == ("label", 5)
+
+    @pytest.mark.parametrize("kind", ["positional", "nested", "method", "async"])
+    def test_partial_positional_values_are_denied(self, gate, kind):
+        from functools import partial
+
+        calls = []
+
+        def tool(count=5):
+            calls.append(count)
+            return count
+
+        async def async_tool(count=5):
+            return tool(count)
+
+        class Tool:
+            def run(self, count=5):
+                return tool(count)
+
+        func = async_tool if kind == "async" else Tool().run if kind == "method" else tool
+        bound = partial(func, 101)
+        if kind == "nested":
+            bound = partial(bound)
+        protected = gate(bound)
+        with pytest.raises(PolicyDeniedError):
+            if kind == "async":
+                asyncio.run(protected())
+            else:
+                protected()
+        assert calls == []
+        safe = gate(partial(func, 5))
+        assert (asyncio.run(safe()) if kind == "async" else safe()) == 5
+
+    def test_partial_keyword_updates_and_overrides_are_evaluated(self, gate):
+        from functools import partial
+
+        calls = []
+
+        def tool(count=5):
+            calls.append(count)
+            return count
+
+        bound = partial(tool, count=5)
+        protected = gate(bound)
+        bound.keywords["count"] = 101
+        with pytest.raises(PolicyDeniedError):
+            protected()
+        assert calls == []
+        assert protected(count=6) == 6
+        bound.keywords["count"] = 5
+        assert protected() == 5
+        assert calls == [6, 5]
+
+    def test_inherited_partial_calls_keep_argument_checks(self, gate):
+        from functools import partial
+
+        calls = []
+
+        class BoundTool(partial):
+            pass
+
+        def tool(count=5):
+            calls.append(count)
+            return count
+
+        protected = gate(BoundTool(tool, 101))
+        with pytest.raises(PolicyDeniedError):
+            protected()
+        assert calls == []
+        assert gate(BoundTool(tool, 5))() == 5
+
+    def test_custom_partial_invocation_requires_adapter(self, gate):
+        from functools import partial
+
+        calls = []
+
+        class CustomTool(partial):
+            def __call__(self, *args, **kwargs):
+                calls.append("custom invocation")
+                return super().__call__(*args, **kwargs)
+
+        protected = gate(CustomTool(lambda count=5: count))
+        with pytest.raises(PolicyDeniedError, match="inspectable adapter") as exc_info:
+            protected()
+        assert exc_info.value.decision.matched_rule == "argument_binding_failed"
+        assert calls == []
+
+    def test_partial_invocation_uses_evaluated_keyword_snapshot(
+        self, gate, argument_engine, monkeypatch
+    ):
+        from functools import partial
+
+        calls = []
+
+        def tool(count=5):
+            calls.append(count)
+            return count
+
+        bound = partial(tool, count=5)
+        protected = gate(bound)
+        evaluate = argument_engine.evaluate
+
+        def mutate_partial_during_evaluation(**kwargs):
+            bound.keywords["count"] = 101
+            return evaluate(**kwargs)
+
+        monkeypatch.setattr(argument_engine, "evaluate", mutate_partial_during_evaluation)
+        assert protected() == 5
+        assert bound.keywords["count"] == 101
+        assert calls == [5]
+
+    def test_async_callable_object_defaults_are_denied(self, gate):
+        calls = []
+
+        class Tool:
+            async def __call__(self, count=101):
+                calls.append(count)
+                return count
+
+        protected = gate(Tool())
+        with pytest.raises(PolicyDeniedError):
+            protected()
+        assert calls == []
+        assert asyncio.run(protected(count=5)) == 5
+
+    def test_uninspectable_builtin_requires_adapter(self, gate):
+        protected = gate(dict)
+        with pytest.raises(PolicyDeniedError, match="inspectable signature"):
+            protected(count=5)
+
+    @pytest.mark.parametrize("args, kwargs", [((5, 6), {}), ((), {"unknown": 5})])
+    def test_invalid_call_is_denied_without_execution(self, gate, args, kwargs):
+        calls = []
+
+        def tool(count=5):
+            calls.append(count)
+
+        protected = gate(tool)
+        with pytest.raises(PolicyDeniedError):
+            protected(*args, **kwargs)
+        assert calls == []
+
+    def test_nested_variadic_policy_paths_still_deny(self, tmp_path):
+        (tmp_path / "nested.yaml").write_text(textwrap.dedent("""\
+                name: nested-policy
+                default_verdict: ALLOW
+                rules:
+                  - name: block-nested-count
+                    verdict: DENY
+                    conditions:
+                      - field: args.extras.count
+                        operator: gt
+                        value: 100
+                """))
+        engine = PolicyEngine(policy_paths=[tmp_path])
+        calls = []
+
+        @policy_gate(engine)
+        def tool(label="test", **extras):
+            calls.append(extras)
+            return label, extras
+
+        with pytest.raises(PolicyDeniedError):
+            tool(count=101)
+        with pytest.raises(PolicyDeniedError):
+            tool("label", count=101)
+        assert calls == []
+        assert tool(count=5) == ("test", {"count": 5})

@@ -22,7 +22,7 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 
 class PolicyArgumentBindingError(Exception):
-    """Raised when positional arguments cannot be represented for policy checks."""
+    """Raised when effective arguments cannot be represented for policy checks."""
 
 
 class PolicyDeniedError(Exception):
@@ -41,21 +41,51 @@ def _bind_positional_args(
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
 ) -> dict[str, Any]:
-    """Map positional args to their parameter names for policy evaluation."""
-    if not args:
-        return kwargs
+    """Expose defaults and variadic keywords consistently for policy checks.
+
+    Keep the variadic keyword container for existing nested policy paths, and
+    also expose its entries at the top level. Reject ambiguous name collisions
+    rather than hide either value the callable will receive.
+    """
     if sig is None:
         raise PolicyArgumentBindingError(
-            "Cannot safely bind positional arguments for policy evaluation."
+            "Policy gating requires a callable with an inspectable signature."
         )
     try:
         bound = sig.bind(*args, **kwargs)
         bound.apply_defaults()
-        return dict(bound.arguments)
     except (TypeError, ValueError) as exc:
         raise PolicyArgumentBindingError(
-            "Cannot safely bind positional arguments for policy evaluation."
+            "Cannot safely bind arguments for policy evaluation."
         ) from exc
+
+    mapped = dict(bound.arguments)
+    for parameter in sig.parameters.values():
+        if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+            extra_keywords = bound.arguments[parameter.name]
+            if extra_keywords.keys() & mapped.keys():
+                raise PolicyArgumentBindingError(
+                    "Cannot safely gate colliding variadic keyword names."
+                )
+            mapped.update(extra_keywords)
+    return mapped
+
+
+def _resolve_partial_call(
+    func: Callable[..., Any],
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> tuple[Callable[..., Any], tuple[Any, ...], dict[str, Any]]:
+    """Snapshot partial arguments for both policy evaluation and invocation."""
+    while isinstance(func, functools.partial):
+        if type(func).__call__ is not functools.partial.__call__:
+            raise PolicyArgumentBindingError(
+                "Partial callables with custom invocation require an inspectable adapter."
+            )
+        args = func.args + args
+        kwargs = {**func.keywords, **kwargs}
+        func = func.func
+    return func, args, kwargs
 
 
 def _deny_unbound_arguments(tool_name: str, exc: PolicyArgumentBindingError) -> None:
@@ -96,12 +126,22 @@ def policy_gate(
                    Defaults to the decorated function's __name__.
         extra_context: Static context merged into every evaluation
                        (e.g., {"environment": "production"}).
+
+    Raises:
+        PolicyDeniedError: If policy denies the call or effective arguments
+                           cannot be mapped safely. Opaque callables and
+                           partial subclasses with custom invocation need an
+                           inspectable adapter. Ambiguous variadic keyword
+                           names are rejected before the callable runs.
     """
 
     def decorator(func: F) -> F:
         resolved_name = tool_name or func.__name__
+        signature_func: Callable[..., Any] = func
+        while isinstance(signature_func, functools.partial):
+            signature_func = signature_func.func
         try:
-            cached_sig = inspect.signature(func)
+            cached_sig = inspect.signature(signature_func)
         except (TypeError, ValueError):
             cached_sig = None
 
@@ -110,7 +150,8 @@ def policy_gate(
             @functools.wraps(func)
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
                 try:
-                    bound_args = _bind_positional_args(cached_sig, args, kwargs)
+                    target, call_args, call_kwargs = _resolve_partial_call(func, args, kwargs)
+                    bound_args = _bind_positional_args(cached_sig, call_args, call_kwargs)
                 except PolicyArgumentBindingError as exc:
                     _deny_unbound_arguments(resolved_name, exc)
                 decision = engine.evaluate(
@@ -119,14 +160,15 @@ def policy_gate(
                     context=extra_context,
                 )
                 _enforce(decision, resolved_name)
-                return await func(*args, **kwargs)
+                return await target(*call_args, **call_kwargs)
 
             return async_wrapper  # type: ignore[return-value]
 
         @functools.wraps(func)
         def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
             try:
-                bound_args = _bind_positional_args(cached_sig, args, kwargs)
+                target, call_args, call_kwargs = _resolve_partial_call(func, args, kwargs)
+                bound_args = _bind_positional_args(cached_sig, call_args, call_kwargs)
             except PolicyArgumentBindingError as exc:
                 _deny_unbound_arguments(resolved_name, exc)
             decision = engine.evaluate(
@@ -135,7 +177,7 @@ def policy_gate(
                 context=extra_context,
             )
             _enforce(decision, resolved_name)
-            return func(*args, **kwargs)
+            return target(*call_args, **call_kwargs)
 
         return sync_wrapper  # type: ignore[return-value]
 
