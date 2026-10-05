@@ -83,15 +83,18 @@ class OCISyncProvider(SyncProvider):
         return results
 
     def download(self, remote_key: str, local_path: Path) -> None:
-        local_path.parent.mkdir(parents=True, exist_ok=True)
         response = self._client.get_object(
             namespace_name=self._namespace,
             bucket_name=self._bucket,
             object_name=remote_key,
         )
-        with open(local_path, "wb") as fh:
-            for chunk in response.data.raw.stream(8192, decode_content=False):
-                fh.write(chunk)
+        raw = response.data.raw
+        try:
+            self._write_bounded_download(raw.stream(8192, decode_content=False), local_path)
+        finally:
+            close = getattr(raw, "close", None)
+            if callable(close):
+                close()
         logger.info(
             "Downloaded oci://%s/%s/%s → %s",
             self._namespace,

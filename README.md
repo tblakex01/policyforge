@@ -192,6 +192,9 @@ decisions become shareable escalation moments.
 | `gt` / `lt` | Greater / less than | `args.count gt 100` |
 | `gte` / `lte` | Greater/less or equal | `args.amount lte 1000` |
 
+Regex matches have a 50 ms execution budget and a 4,096-character input limit.
+A timeout returns `DENY` even when a policy requests `fail_mode: open`.
+
 ---
 
 ## Audit Trail
@@ -218,6 +221,12 @@ print(f"{valid} valid, {tampered} tampered")
 ```
 
 Each log entry contains: timestamp, request ID, tool name, agent ID, args hash (SHA-256, not raw args), verdict, matched rule, policy name, evaluation time, and HMAC signature.
+Each new log file also has an HMAC-signed `.jsonl.anchor` file binding its first entry,
+including after rotation. `verify_log()` reports a missing or invalid anchor as tampering.
+For older logs created without anchors, use `verify_log(path, allow_legacy_unanchored=True)`
+only when archival compatibility is required; that mode cannot detect a removed prefix.
+Keep a separately protected inventory or checkpoint if whole-file deletion or tail
+truncation must be detected.
 Share receipt generation is logged as an `event` record with
 `event="share_receipt_generated"` and metadata including the verdict and receipt
 format, which gives you a lightweight funnel from denied decisions to internal
@@ -285,6 +294,9 @@ Will defend exfiltration chains (read private data → ingest untrusted content 
 Sync policies across your multi-cloud environment. The sync layer is strictly for policy *distribution* — security decisions are always made locally. Remote subdirectories are preserved locally, and unchanged-file skips use provider-specific checksums when the backend exposes one.
 PolicyForge preserves nested policy directories during pull and push, so teams can organize
 policies by environment or business unit without filename collisions.
+Sync rejects linked local policy paths and policy objects above 10 MiB. Pull downloads to
+private staging before installing a verified local file; push uploads a verified snapshot.
+Oversized or unsafe files are recorded as per-file errors while other files continue.
 
 ```python
 from policyforge.sync import SyncManager

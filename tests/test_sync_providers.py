@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from policyforge.sync import base as sync_base
 from policyforge.sync.azure_blob import AzureBlobSyncProvider
 from policyforge.sync.base import ComparableDigest, SyncProvider
 from policyforge.sync.oci_os import OCISyncProvider
@@ -219,17 +220,56 @@ class TestS3DownloadUpload:
 
         downloads = []
 
-        def fake_download_file(bucket, key, path):
-            downloads.append((bucket, key, path))
-            Path(path).write_text("downloaded content", encoding="utf-8")
+        class FakeBody:
+            def iter_chunks(self, chunk_size):
+                yield b"downloaded content"
 
-        provider._s3 = SimpleNamespace(download_file=fake_download_file)
+            def close(self):
+                pass
+
+        def fake_get_object(**kwargs):
+            downloads.append((kwargs["Bucket"], kwargs["Key"]))
+            return {"Body": FakeBody()}
+
+        provider._s3 = SimpleNamespace(get_object=fake_get_object)
 
         local_path = tmp_path / "sub" / "policy.yaml"
         provider.download("policies/sub/policy.yaml", local_path)
 
         assert local_path.exists()
-        assert downloads == [("test-bucket", "policies/sub/policy.yaml", str(local_path))]
+        assert local_path.read_bytes() == b"downloaded content"
+        assert downloads == [("test-bucket", "policies/sub/policy.yaml")]
+
+    def test_download_stops_when_actual_object_exceeds_limit(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sync_base, "MAX_POLICY_BYTES", 5)
+        provider = S3SyncProvider.__new__(S3SyncProvider)
+        provider._bucket = "test-bucket"
+        emitted: list[bytes] = []
+
+        class FakeBody:
+            def iter_chunks(self, chunk_size):
+                for chunk in (b"abc", b"def", b"ghi"):
+                    emitted.append(chunk)
+                    yield chunk
+
+            def close(self):
+                pass
+
+        def fake_download_file(_bucket, _key, path):
+            Path(path).write_bytes(b"abcdefghi")
+
+        provider._s3 = SimpleNamespace(
+            get_object=lambda **_kwargs: {"Body": FakeBody()},
+            download_file=fake_download_file,
+        )
+        destination = tmp_path / "policy.yaml"
+        destination.write_bytes(b"original")
+
+        with pytest.raises(ValueError, match="size"):
+            provider.download("policies/policy.yaml", destination)
+
+        assert emitted == [b"abc", b"def"]
+        assert destination.read_bytes() == b"original"
 
     def test_upload_sends_file_with_checksum(self, tmp_path):
         provider = S3SyncProvider.__new__(S3SyncProvider)
@@ -277,8 +317,9 @@ class TestAzureDownloadUpload:
         blob_content = b"name: azure-policy\n"
 
         class FakeStream:
-            def readall(self):
-                return blob_content
+            def chunks(self):
+                yield blob_content[:7]
+                yield blob_content[7:]
 
         class FakeBlobDl:
             def download_blob(self):
@@ -293,6 +334,30 @@ class TestAzureDownloadUpload:
         provider.download("policies/nested/policy.yaml", local_path)
 
         assert local_path.read_bytes() == blob_content
+
+    def test_download_overrun_preserves_existing_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sync_base, "MAX_POLICY_BYTES", 5)
+        provider = AzureBlobSyncProvider.__new__(AzureBlobSyncProvider)
+        provider._container = "policies"
+
+        class FakeStream:
+            def chunks(self):
+                yield b"abc"
+                yield b"def"
+
+        class FakeBlob:
+            def download_blob(self):
+                return FakeStream()
+
+        provider._client = SimpleNamespace(get_blob_client=lambda _key: FakeBlob())
+        local_path = tmp_path / "policy.yaml"
+        local_path.write_bytes(b"original")
+
+        with pytest.raises(ValueError, match="size"):
+            provider.download("policies/policy.yaml", local_path)
+
+        assert local_path.read_bytes() == b"original"
+        assert list(tmp_path.iterdir()) == [local_path]
 
     def test_upload_sends_blob_with_md5(self, tmp_path):
         provider = AzureBlobSyncProvider.__new__(AzureBlobSyncProvider)
@@ -346,6 +411,31 @@ class TestOCIDownloadUpload:
         provider.download("policies/deep/policy.yaml", local_path)
 
         assert local_path.read_bytes() == b"name: oci-policy\n"
+
+    def test_download_stops_when_actual_object_exceeds_limit(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sync_base, "MAX_POLICY_BYTES", 5)
+        provider = OCISyncProvider.__new__(OCISyncProvider)
+        provider._namespace = "ns"
+        provider._bucket = "bucket"
+        emitted: list[bytes] = []
+
+        class FakeRaw:
+            def stream(self, chunk_size, decode_content=False):
+                for chunk in (b"abc", b"def", b"ghi"):
+                    emitted.append(chunk)
+                    yield chunk
+
+        provider._client = SimpleNamespace(
+            get_object=lambda **_kwargs: SimpleNamespace(data=SimpleNamespace(raw=FakeRaw()))
+        )
+        destination = tmp_path / "policy.yaml"
+        destination.write_bytes(b"original")
+
+        with pytest.raises(ValueError, match="size"):
+            provider.download("policies/policy.yaml", destination)
+
+        assert emitted == [b"abc", b"def"]
+        assert destination.read_bytes() == b"original"
 
     def test_upload_puts_object(self, tmp_path):
         provider = OCISyncProvider.__new__(OCISyncProvider)

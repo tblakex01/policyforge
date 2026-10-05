@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from policyforge.decorators import PolicyDeniedError, policy_gate
 from policyforge.engine import PolicyEngine
 from policyforge.models import Verdict
 from policyforge.trust.ledger import LedgerWriter
@@ -73,6 +74,71 @@ class TestBackwardsCompat:
 
 
 class TestTrustPreflight:
+    @pytest.fixture
+    def deny_shell_policy(self, tmp_path: Path) -> Path:
+        policy = tmp_path / "deny_shell.yaml"
+        policy.write_text(
+            """
+name: deny-shell
+default_verdict: ALLOW
+rules:
+  - name: no-shell
+    conditions:
+      - field: tool_name
+        operator: eq
+        value: run_shell
+    verdict: DENY
+""",
+            encoding="utf-8",
+        )
+        return policy
+
+    def test_unwired_warn_does_not_bypass_policy_deny(self, deny_shell_policy):
+        policy = deny_shell_policy.read_text(encoding="utf-8")
+        deny_shell_policy.write_text("tool_trust:\n  mode: warn\n" + policy, encoding="utf-8")
+        engine = PolicyEngine(policy_paths=[deny_shell_policy])
+        calls: list[str] = []
+
+        @policy_gate(engine, tool_name="run_shell")
+        def run_shell() -> None:
+            calls.append("ran")
+
+        with pytest.raises(PolicyDeniedError) as exc_info:
+            run_shell()
+        assert exc_info.value.decision.matched_rule == "no-shell"
+        assert calls == []
+
+    def test_wired_log_only_does_not_bypass_policy_deny(self, deny_shell_policy, ledger_path):
+        tm = TrustManager(
+            TrustConfig(
+                mode=TrustMode.WARN,
+                ledger_path=ledger_path,
+                on_unknown=TrustVerdict.LOG_ONLY,
+            ),
+            hmac_key="k",
+        )
+        engine = PolicyEngine(policy_paths=[deny_shell_policy], trust_manager=tm)
+        calls: list[str] = []
+
+        @policy_gate(
+            engine,
+            tool_name="run_shell",
+            extra_context=_tool_context("mcp://x", "5" * 64, "7" * 64),
+        )
+        def run_shell() -> None:
+            calls.append("ran")
+
+        with pytest.raises(PolicyDeniedError) as exc_info:
+            run_shell()
+        assert exc_info.value.decision.matched_rule == "no-shell"
+        assert calls == []
+
+    def test_unwired_warn_without_active_policy_still_denies(self, tmp_path):
+        policy = tmp_path / "trust_only.yaml"
+        policy.write_text("tool_trust:\n  mode: warn\n", encoding="utf-8")
+        decision = PolicyEngine(policy_paths=[policy]).evaluate("run_shell")
+        assert decision.verdict == Verdict.DENY
+
     def test_unknown_tool_denied_before_rules(self, policy_file, ledger_path):
         ledger_path.touch()
         tm = TrustManager(

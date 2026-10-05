@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from policyforge.sync.base import SyncProvider
 from policyforge.sync.manager import SyncManager
 
@@ -17,6 +19,7 @@ class FakeSyncProvider(SyncProvider):
         self._remote_files = remote_files
         self.download_calls: list[tuple[str, Path]] = []
         self.upload_calls: list[tuple[Path, str]] = []
+        self.uploaded_contents: list[str] = []
 
     @property
     def name(self) -> str:
@@ -32,6 +35,7 @@ class FakeSyncProvider(SyncProvider):
 
     def upload(self, local_path: Path, remote_key: str) -> None:
         self.upload_calls.append((local_path, remote_key))
+        self.uploaded_contents.append(local_path.read_text(encoding="utf-8"))
 
 
 class TestSyncManagerPaths:
@@ -67,9 +71,8 @@ class TestSyncManagerPaths:
         results = manager.push()
 
         assert results[0].uploaded == 1
-        assert provider.upload_calls == [
-            (nested_policy, "policies/team-a/policy.yaml"),
-        ]
+        assert [key for _, key in provider.upload_calls] == ["policies/team-a/policy.yaml"]
+        assert provider.uploaded_contents == ["name: nested\n"]
 
     def test_pull_skips_when_remote_md5_base64_matches(self, tmp_path):
         local_policy = tmp_path / "team-a" / "policy.yaml"
@@ -144,9 +147,8 @@ class TestSyncManagerPaths:
         assert results[0].uploaded == 1
         assert results[0].success is False
         assert "Unsupported checksum algorithm" in results[0].errors[0]
-        assert provider.upload_calls == [
-            (nested_policy, "policies/team-a/policy.yaml"),
-        ]
+        assert [key for _, key in provider.upload_calls] == ["policies/team-a/policy.yaml"]
+        assert provider.uploaded_contents == ["name: nested\n"]
 
     def test_pull_reports_unsupported_remote_digest_and_continues(self, tmp_path):
         local_policy = tmp_path / "team-a" / "policy.yaml"
@@ -171,9 +173,10 @@ class TestSyncManagerPaths:
         assert results[0].downloaded == 1
         assert results[0].success is False
         assert "Unsupported checksum algorithm" in results[0].errors[0]
-        assert provider.download_calls == [
-            ("policies/team-a/policy.yaml", local_policy),
-        ]
+        assert [key for key, _ in provider.download_calls] == ["policies/team-a/policy.yaml"]
+        assert local_policy.read_text(encoding="utf-8") == (
+            "downloaded:policies/team-a/policy.yaml"
+        )
 
 
 class FailingListProvider(FakeSyncProvider):
@@ -205,6 +208,132 @@ class UnsafeKeyProvider(FakeSyncProvider):
 
 
 class TestSyncManagerFailures:
+    @staticmethod
+    def _make_link(link: Path, target: Path, *, is_directory: bool = False) -> None:
+        try:
+            link.symlink_to(target, target_is_directory=is_directory)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"Links unavailable on this host: {exc}")
+
+    def test_pull_rejects_linked_parent_outside_local_dir(self, tmp_path):
+        root = tmp_path / "local"
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        target = outside / "policy.yaml"
+        target.write_text("original", encoding="utf-8")
+        root.mkdir()
+        self._make_link(root / "linked", outside, is_directory=True)
+        provider = FakeSyncProvider([{"key": "policies/linked/policy.yaml", "size": 12}])
+        manager = SyncManager(local_dir=root)
+        manager.add_provider(provider)
+
+        result = manager.pull()[0]
+
+        assert result.success is False
+        assert result.downloaded == 0
+        assert provider.download_calls == []
+        assert target.read_text(encoding="utf-8") == "original"
+
+    def test_pull_rejects_linked_leaf_before_checksum(self, tmp_path):
+        root = tmp_path / "local"
+        root.mkdir()
+        target = tmp_path / "outside.yaml"
+        target.write_text("original", encoding="utf-8")
+        self._make_link(root / "policy.yaml", target)
+        provider = FakeSyncProvider(
+            [
+                {
+                    "key": "policies/policy.yaml",
+                    "size": 8,
+                    "content_hash": SyncProvider.file_checksum(target, "md5-hex"),
+                    "content_hash_algorithm": "md5-hex",
+                }
+            ]
+        )
+        manager = SyncManager(local_dir=root)
+        manager.add_provider(provider)
+
+        result = manager.pull()[0]
+
+        assert result.success is False
+        assert result.downloaded == 0
+        assert "Unsafe local path" in result.errors[0]
+
+    def test_pull_rejects_dangling_leaf_link(self, tmp_path):
+        root = tmp_path / "local"
+        root.mkdir()
+        self._make_link(root / "policy.yaml", tmp_path / "missing.yaml")
+        provider = FakeSyncProvider([{"key": "policies/policy.yaml", "size": 5}])
+        manager = SyncManager(local_dir=root)
+        manager.add_provider(provider)
+
+        result = manager.pull()[0]
+
+        assert result.success is False
+        assert result.downloaded == 0
+        assert provider.download_calls == []
+
+    def test_push_rejects_yaml_symlink_outside_local_dir(self, tmp_path):
+        root = tmp_path / "local"
+        root.mkdir()
+        target = tmp_path / "outside.yaml"
+        target.write_text("secret", encoding="utf-8")
+        self._make_link(root / "linked.yaml", target)
+        provider = FakeSyncProvider([])
+        manager = SyncManager(local_dir=root)
+        manager.add_provider(provider)
+
+        result = manager.push()[0]
+
+        assert result.success is False
+        assert result.uploaded == 0
+        assert provider.upload_calls == []
+
+    def test_push_rejects_link_swapped_at_open(self, tmp_path, monkeypatch):
+        root = tmp_path / "local"
+        root.mkdir()
+        policy = root / "policy.yaml"
+        policy.write_text("name: safe\n", encoding="utf-8")
+        outside = tmp_path / "outside.yaml"
+        outside.write_text("secret", encoding="utf-8")
+        provider = FakeSyncProvider([])
+        manager = SyncManager(local_dir=root)
+        manager.add_provider(provider)
+
+        from policyforge.sync import _local
+
+        real_open = _local.os.open
+        swapped = False
+
+        def swap_before_open(path, flags, mode=0o777):
+            nonlocal swapped
+            if Path(path) == policy and not swapped:
+                swapped = True
+                policy.unlink()
+                self._make_link(policy, outside)
+            return real_open(path, flags, mode)
+
+        monkeypatch.setattr(_local.os, "open", swap_before_open)
+        result = manager.push()[0]
+
+        assert swapped
+        assert result.success is False
+        assert result.uploaded == 0
+        assert provider.upload_calls == []
+        assert outside.read_text(encoding="utf-8") == "secret"
+
+    def test_pull_rejects_oversized_listed_object(self, tmp_path):
+        provider = FakeSyncProvider([{"key": "policies/large.yaml", "size": 11 * 1024 * 1024}])
+        manager = SyncManager(local_dir=tmp_path)
+        manager.add_provider(provider)
+
+        result = manager.pull()[0]
+
+        assert result.success is False
+        assert result.downloaded == 0
+        assert provider.download_calls == []
+        assert "size" in result.errors[0].lower()
+
     def test_pull_handles_list_remote_failure(self, tmp_path):
         provider = FailingListProvider([])
         manager = SyncManager(local_dir=tmp_path)

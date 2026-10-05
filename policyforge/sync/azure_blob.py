@@ -79,11 +79,8 @@ class AzureBlobSyncProvider(SyncProvider):
         return results
 
     def download(self, remote_key: str, local_path: Path) -> None:
-        local_path.parent.mkdir(parents=True, exist_ok=True)
         blob_client = self._client.get_blob_client(remote_key)
-        with open(local_path, "wb") as fh:
-            stream = blob_client.download_blob()
-            fh.write(stream.readall())
+        self._write_bounded_download(blob_client.download_blob().chunks(), local_path)
         logger.info("Downloaded azure://%s/%s → %s", self._container, remote_key, local_path)
 
     def upload(self, local_path: Path, remote_key: str) -> None:

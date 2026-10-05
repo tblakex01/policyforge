@@ -68,8 +68,11 @@ class S3SyncProvider(SyncProvider):
         return results
 
     def download(self, remote_key: str, local_path: Path) -> None:
-        local_path.parent.mkdir(parents=True, exist_ok=True)
-        self._s3.download_file(self._bucket, remote_key, str(local_path))
+        body = self._s3.get_object(Bucket=self._bucket, Key=remote_key)["Body"]
+        try:
+            self._write_bounded_download(body.iter_chunks(chunk_size=8192), local_path)
+        finally:
+            body.close()
         logger.info("Downloaded s3://%s/%s → %s", self._bucket, remote_key, local_path)
 
     def upload(self, local_path: Path, remote_key: str) -> None:

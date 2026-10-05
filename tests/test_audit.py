@@ -69,6 +69,49 @@ class TestAuditLogger:
         assert valid == 5
         assert tampered == 0
 
+    def test_verify_detects_removed_signed_prefix(self, audit):
+        for i in range(3):
+            audit.log(
+                request_id=f"r{i}", tool_name="t", agent_id="a", args_hash="h", verdict="DENY"
+            )
+        log_file = next(audit._log_dir.glob("audit_*.jsonl"))
+        lines = log_file.read_text(encoding="utf-8").splitlines()
+        log_file.write_text("\n".join(lines[1:]) + "\n", encoding="utf-8")
+
+        valid, tampered = audit.verify_log(log_file)
+        assert valid == 2
+        assert tampered >= 1
+
+    def test_verify_detects_missing_file_anchor(self, audit):
+        audit.log(request_id="r", tool_name="t", agent_id="a", args_hash="h", verdict="DENY")
+        anchor_files = list(audit._log_dir.glob("*.anchor"))
+        assert len(anchor_files) == 1
+        anchor_files[0].unlink()
+
+        assert audit.verify_log()[1] >= 1
+
+    def test_legacy_mode_does_not_accept_corrupt_anchor(self, audit):
+        audit.log(request_id="r", tool_name="t", agent_id="a", args_hash="h", verdict="DENY")
+        anchor = next(audit._log_dir.glob("*.anchor"))
+        anchor.write_text("{}", encoding="utf-8")
+
+        assert audit.verify_log(allow_legacy_unanchored=True)[1] >= 1
+
+    def test_rotated_files_retain_verifiable_chain_starts(self, tmp_path, monkeypatch):
+        audit = AuditLogger(log_dir=tmp_path, hmac_key="rotation-key", max_file_bytes=1)
+        sequence = iter(range(3))
+        monkeypatch.setattr(
+            audit, "_new_log_path", lambda: tmp_path / f"audit_rotated_{next(sequence)}.jsonl"
+        )
+        for i in range(3):
+            audit.log(
+                request_id=f"r{i}", tool_name="t", agent_id="a", args_hash="h", verdict="ALLOW"
+            )
+
+        log_files = sorted(tmp_path.glob("audit_*.jsonl"))
+        assert len(log_files) == 3
+        assert [audit.verify_log(path) for path in log_files] == [(1, 0)] * 3
+
     def test_detect_tampered_entry(self, audit):
         audit.log(
             request_id="req-001",
@@ -228,7 +271,7 @@ class TestAuditLogger:
         }
         log_file.write_text(json.dumps(record) + "\n", encoding="utf-8")
 
-        valid, tampered = audit.verify_log()
+        valid, tampered = audit.verify_log(allow_legacy_unanchored=True)
 
         assert valid == 1
         assert tampered == 0
@@ -269,7 +312,7 @@ class TestAuditLogger:
         }
         log_file.write_text(json.dumps(record) + "\n", encoding="utf-8")
 
-        valid, tampered = audit.verify_log()
+        valid, tampered = audit.verify_log(allow_legacy_unanchored=True)
 
         assert valid == 0
         assert tampered == 1
@@ -388,7 +431,7 @@ class TestHmacKeyPrecedence:
         audit_env = AuditLogger(log_dir=tmp_path / "other", hmac_key="env-key")
         audit_env._current_file = audit._current_file
         valid_env, tampered_env = audit_env.verify_log()
-        assert tampered_env == 1
+        assert tampered_env >= 1
 
 
 class TestAuditRequiresKey:

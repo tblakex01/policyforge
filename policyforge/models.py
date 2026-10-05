@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, ClassVar
 
+import regex
+
 
 class Verdict(str, Enum):
     """Outcome of a policy evaluation."""
@@ -63,6 +65,7 @@ class Condition:
         {"eq", "neq", "in", "not_in", "contains", "regex", "gt", "lt", "gte", "lte"}
     )
     _MAX_REGEX_INPUT_CHARS: ClassVar[int] = 4096
+    _REGEX_TIMEOUT_SECONDS: ClassVar[float] = 0.05
 
     def __post_init__(self) -> None:
         if self.operator not in self._VALID_OPS:
@@ -74,8 +77,9 @@ class Condition:
             if _has_nested_quantifier(pattern):
                 raise ValueError(f"Unsafe regex pattern '{self.value}': nested quantifiers")
             try:
-                compiled = re.compile(pattern)
-            except re.error as exc:
+                re.compile(pattern)  # Preserve the existing Python re policy grammar.
+                compiled = regex.compile(pattern, flags=regex.VERSION0)
+            except (re.error, regex.error) as exc:
                 raise ValueError(f"Invalid regex pattern '{self.value}': {exc}") from exc
             object.__setattr__(self, "_compiled_re", compiled)
 
@@ -87,8 +91,8 @@ class Condition:
             )
         compiled = getattr(self, "_compiled_re", None)
         if compiled is not None:
-            return bool(compiled.search(actual))
-        return bool(re.search(str(self.value), actual))
+            return bool(compiled.search(actual, timeout=self._REGEX_TIMEOUT_SECONDS))
+        return bool(regex.search(str(self.value), actual, timeout=self._REGEX_TIMEOUT_SECONDS))
 
 
 @dataclass(frozen=True)

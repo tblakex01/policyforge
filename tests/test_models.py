@@ -1,5 +1,8 @@
 """Tests for core data models."""
 
+from contextlib import suppress
+from time import perf_counter
+
 import pytest
 
 from policyforge.models import (
@@ -47,6 +50,25 @@ class TestCondition:
         c = Condition(field="x", operator="regex", value=r"\d{3}")
         assert c.match_regex("abc123def") is True
         assert c.match_regex("no-digits") is False
+
+    def test_regex_search_receives_runtime_budget(self):
+        condition = Condition(field="x", operator="regex", value=r"^a+$")
+
+        class BudgetedPattern:
+            def search(self, actual, *, timeout):
+                assert actual == "aaaa"
+                assert 0 < timeout <= 0.1
+                return None
+
+        object.__setattr__(condition, "_compiled_re", BudgetedPattern())
+        assert condition.match_regex("aaaa") is False
+
+    def test_overlapping_alternatives_cannot_stall_match(self):
+        condition = Condition(field="x", operator="regex", value=r"(a|aa)+$")
+        start = perf_counter()
+        with suppress(TimeoutError):
+            assert condition.match_regex("a" * 36 + "!") is False
+        assert perf_counter() - start < 1.0
 
     def test_match_regex_fallback_without_compiled(self):
         """match_regex works even if _compiled_re is missing (defensive path).

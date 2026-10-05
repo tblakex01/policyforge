@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 import os
 import threading
 import time
+import uuid
 from json import JSONDecodeError
 from pathlib import Path
 from typing import Any
@@ -63,7 +66,44 @@ class AuditLogger:
 
     def _new_log_path(self) -> Path:
         ts = time.strftime("%Y%m%d_%H%M%S")
-        return self._log_dir / f"audit_{ts}_{os.getpid()}.jsonl"
+        return self._log_dir / f"audit_{ts}_{os.getpid()}_{uuid.uuid4().hex[:12]}.jsonl"
+
+    @staticmethod
+    def _anchor_path(path: Path) -> Path:
+        return path.with_name(path.name + ".anchor")
+
+    def _anchor_signature(self, payload: dict[str, Any]) -> str:
+        serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hmac.new(self._hmac_key, serialized.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def _write_anchor(self, path: Path, first_hash: str) -> None:
+        """Bind a new log file to its first signed entry before writing it."""
+        payload = {"version": 1, "file": path.name, "first_hmac": first_hash}
+        record = {**payload, "hmac": self._anchor_signature(payload)}
+        fd = os.open(self._anchor_path(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, separators=(",", ":")) + "\n")
+
+    def _read_anchor(self, path: Path) -> str | None:
+        """Return the authenticated first-entry hash, or None for invalid anchors."""
+        try:
+            record = json.loads(self._anchor_path(path).read_text(encoding="utf-8"))
+            if not isinstance(record, dict):
+                return None
+            payload = {
+                "version": record["version"],
+                "file": record["file"],
+                "first_hmac": record["first_hmac"],
+            }
+            if payload["version"] != 1 or payload["file"] != path.name:
+                return None
+            if not isinstance(payload["first_hmac"], str):
+                return None
+            if not hmac.compare_digest(record["hmac"], self._anchor_signature(payload)):
+                return None
+            return payload["first_hmac"]
+        except (OSError, JSONDecodeError, KeyError, TypeError, ValueError):
+            return None
 
     def log(
         self,
@@ -142,6 +182,10 @@ class AuditLogger:
         except FileNotFoundError:
             pass  # file doesn't exist yet, no rotation needed
 
+        new_file = not self._current_file.exists()
+        if new_file:
+            self._write_anchor(self._current_file, entry.integrity_hash)
+
         record = {
             "ts": entry.timestamp,
             "rid": entry.request_id,
@@ -159,19 +203,32 @@ class AuditLogger:
             "hmac": entry.integrity_hash,
             "chain_prev": entry.chain_prev,
         }
-        with open(self._current_file, "a", encoding="utf-8") as fh:
+        with open(self._current_file, "x" if new_file else "a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, separators=(",", ":"), default=str) + "\n")
 
-    def verify_log(self, path: str | Path | None = None) -> tuple[int, int]:
+    def verify_log(
+        self, path: str | Path | None = None, *, allow_legacy_unanchored: bool = False
+    ) -> tuple[int, int]:
         """Verify integrity of a log file. Returns (valid_count, tampered_count).
 
         Reads each JSON-lines entry and recomputes its HMAC.  If chain_hashes
-        was enabled, also validates the hash chain.
+        was enabled, also validates the hash chain. Legacy files lacking an
+        authenticated first-entry anchor require explicit opt-in.
         """
         path = Path(path) if path else self._current_file
         valid = 0
         tampered = 0
         prev_hash = ""
+        try:
+            self._anchor_path(path).lstat()
+            anchor_present = True
+        except FileNotFoundError:
+            anchor_present = False
+        first_hash = self._read_anchor(path)
+        if first_hash is None and (anchor_present or not allow_legacy_unanchored):
+            logger.error("MISSING OR INVALID audit anchor for %s", path)
+            tampered += 1
+        first_entry = True
 
         with open(path, encoding="utf-8") as fh:
             for line_num, line in enumerate(fh, start=1):
@@ -203,6 +260,12 @@ class AuditLogger:
                     tampered += 1
                     continue
 
+                if first_entry:
+                    if first_hash is not None and entry.integrity_hash != first_hash:
+                        logger.error("AUDIT PREFIX REMOVED or changed in %s", path)
+                        tampered += 1
+                    first_entry = False
+
                 if entry.verify(self._hmac_key, include_event_fields=include_event_fields):
                     valid += 1
                 else:
@@ -215,5 +278,9 @@ class AuditLogger:
                     tampered += 1
 
                 prev_hash = entry.integrity_hash
+
+        if first_entry and first_hash is not None:
+            logger.error("AUDIT LOG EMPTY but anchored in %s", path)
+            tampered += 1
 
         return valid, tampered

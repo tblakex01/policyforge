@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import tempfile
 from pathlib import Path
 
-from policyforge.sync.base import SyncProvider, SyncResult
+from policyforge.sync._local import LocalPolicyStore
+from policyforge.sync.base import MAX_POLICY_BYTES, SyncProvider, SyncResult
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,8 @@ class SyncManager:
     def __init__(self, local_dir: str | Path) -> None:
         self._local_dir = Path(local_dir)
         self._local_dir.mkdir(parents=True, exist_ok=True)
+        self._store = LocalPolicyStore(self._local_dir)
+        self._local_dir = self._store.root
         self._providers: list[SyncProvider] = []
 
     def add_provider(self, provider: SyncProvider) -> None:
@@ -72,20 +76,30 @@ class SyncManager:
                     errors.append(msg)
                     continue
 
-                local_path = self._local_dir / local_relative_path
-
-                # Skip if local file matches remote ETag
-                if local_path.exists() and self._matches_local_checksum(
-                    provider,
-                    local_path,
-                    remote,
-                    errors,
-                ):
-                    logger.debug("Skipping unchanged: %s", key)
-                    continue
-
                 try:
-                    provider.download(key, local_path)
+                    size = remote.get("size")
+                    if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+                        raise ValueError("Remote policy size is missing or invalid")
+                    if size > MAX_POLICY_BYTES:
+                        raise ValueError("Remote policy size exceeds maximum")
+
+                    self._store.validate(local_relative_path)
+                    local_path = self._local_dir / local_relative_path
+                    with tempfile.TemporaryDirectory(prefix="policyforge-pull-") as staging:
+                        stage_dir = Path(staging)
+                        if local_path.exists():
+                            existing = self._store.snapshot(
+                                local_relative_path, stage_dir / "existing.yaml"
+                            )
+                            if self._matches_local_checksum(provider, existing, remote, errors):
+                                logger.debug("Skipping unchanged: %s", key)
+                                continue
+
+                        downloaded_path = stage_dir / "downloaded.yaml"
+                        provider.download(key, downloaded_path)
+                        if downloaded_path.stat().st_size > MAX_POLICY_BYTES:
+                            raise ValueError("Downloaded policy size exceeds maximum")
+                        self._store.install(local_relative_path, downloaded_path)
                     downloaded += 1
                 except Exception as exc:
                     msg = f"Failed to download {key}: {exc}"
@@ -134,14 +148,16 @@ class SyncManager:
                 relative_key = relative_path.as_posix()
                 remote_meta = remote_files.get(relative_key)
 
-                if self._matches_local_checksum(provider, local_path, remote_meta, errors):
-                    logger.debug("Skipping unchanged: %s", relative_key)
-                    continue
-
-                # Construct remote key using provider's own prefix logic
-                remote_key = provider.remote_key_for(relative_key)
                 try:
-                    provider.upload(local_path, remote_key)
+                    with tempfile.TemporaryDirectory(prefix="policyforge-push-") as staging:
+                        staged = self._store.snapshot(relative_path, Path(staging) / "policy.yaml")
+                        if self._matches_local_checksum(provider, staged, remote_meta, errors):
+                            logger.debug("Skipping unchanged: %s", relative_key)
+                            continue
+
+                        # Construct remote key using provider's own prefix logic.
+                        remote_key = provider.remote_key_for(relative_key)
+                        provider.upload(staged, remote_key)
                     uploaded += 1
                 except Exception as exc:
                     msg = f"Failed to upload {relative_key}: {exc}"

@@ -248,10 +248,17 @@ class PolicyEngine:
                 policy_name="tool_trust",
                 message="Trust pre-flight failed — fail-closed.",
             )
-        if trust_decision is not None:
+        if trust_decision is not None and trust_decision.verdict == Verdict.DENY:
             decision = trust_decision
         else:
-            decision = self._run_evaluation(eval_context, state)
+            policy_decision = self._run_evaluation(eval_context, state)
+            # Advisory trust findings never override a policy denial. Retain
+            # the advisory result when policy permits the call for auditability.
+            decision = (
+                policy_decision
+                if policy_decision.verdict == Verdict.DENY
+                else trust_decision or policy_decision
+            )
         elapsed_ms = (time.perf_counter() - start) * 1000
         decision = Decision(
             verdict=decision.verdict,
@@ -396,6 +403,19 @@ class PolicyEngine:
                     matched_rule="regex_input_too_large",
                     policy_name=policy.name,
                     message="Regex input exceeds safety bound — fail-closed.",
+                )
+            except TimeoutError:
+                logger.error(
+                    "Policy '%s': regex match timed out for tool=%s; "
+                    "denying regardless of fail_mode.",
+                    policy.name,
+                    context.get("tool_name"),
+                )
+                return Decision(
+                    verdict=Verdict.DENY,
+                    matched_rule="regex_match_timeout",
+                    policy_name=policy.name,
+                    message="Regex match timed out — fail-closed.",
                 )
             except Exception as exc:
                 decision = self._handle_eval_error(policy, exc)

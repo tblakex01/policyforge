@@ -11,7 +11,7 @@ import pytest
 from policyforge.audit import AuditLogger
 from policyforge.engine import PolicyEngine, _hash_args, _resolve_field
 from policyforge.loader import PolicyValidationError
-from policyforge.models import Verdict
+from policyforge.models import Condition, Verdict
 
 
 @pytest.fixture
@@ -349,6 +349,18 @@ class TestRegexInputBound:
             engine.evaluate("sh", {"cmd": "sk-secret-" * 1000})
         assert "regex-policy" in caplog.text
         assert "sk-secret" not in caplog.text
+
+    def test_regex_timeout_denies_even_when_policy_is_fail_open(self, tmp_path, monkeypatch):
+        (tmp_path / "p.yaml").write_text(self._POLICY.format(fail_mode="open"))
+        engine = PolicyEngine(policy_paths=[tmp_path])
+
+        def timeout(_self, _actual):
+            raise TimeoutError("regex timed out")
+
+        monkeypatch.setattr(Condition, "match_regex", timeout)
+        decision = engine.evaluate("sh", {"cmd": "rm -rf /"})
+        assert decision.verdict == Verdict.DENY
+        assert decision.matched_rule == "regex_match_timeout"
 
 
 class TestFailOpen:

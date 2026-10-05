@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
+import tempfile
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
+
+MAX_POLICY_BYTES = 10 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -111,6 +115,33 @@ class SyncProvider(ABC):
             raise ValueError(f"Unsafe remote key: {remote_key}")
 
         return Path(*relative_path.parts)
+
+    @staticmethod
+    def _write_bounded_download(chunks: Iterable[bytes], local_path: Path) -> None:
+        """Stage a remote stream, enforcing its actual size before replacement."""
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        staged_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                prefix=".policyforge-",
+                suffix=".tmp",
+                dir=local_path.parent,
+                delete=False,
+            ) as fh:
+                staged_path = Path(fh.name)
+                downloaded = 0
+                for chunk in chunks:
+                    downloaded += len(chunk)
+                    if downloaded > MAX_POLICY_BYTES:
+                        raise ValueError("Downloaded policy size exceeds maximum")
+                    fh.write(chunk)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(staged_path, local_path)
+        finally:
+            if staged_path is not None:
+                staged_path.unlink(missing_ok=True)
 
     def comparable_remote_digest(
         self,
